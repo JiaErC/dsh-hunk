@@ -26,6 +26,7 @@ import {
   isTrustedRequest,
   locationKey,
   matchSession,
+  notesForDisplay,
   parseJson,
   parsePatchesPayload,
   patchLineKind,
@@ -293,6 +294,28 @@ test('toSplitRows pairs deletions with additions and numbers both sides', () => 
   assert.deepEqual(rows[4].right, { no: 14, text: 'const tail = 4' })
   assert.deepEqual(rows[5], { kind: 'change', left: { no: 14, text: 'gone' } })
   assert.equal(rows.length, 6)
+})
+
+test('notesForDisplay keeps every note visible while the code is hidden', () => {
+  const first = { noteId: 'a', source: 'agent', filePath: 'a.ts', body: 'a' }
+  const second = { noteId: 'b', source: 'user', filePath: 'a.ts', body: 'b' }
+  const notes = [first, second]
+  const placed = { byRow: new Map([[1, [first]]]), unplaced: [second] }
+
+  // File collapsed / hunk collapsed: nothing hangs under code, nothing is lost.
+  const hidden = notesForDisplay({ codeShown: false, placed, notes })
+  assert.equal(hidden.inline.size, 0)
+  assert.deepEqual(hidden.below.map(note => note.noteId), ['a', 'b'])
+
+  // Code on screen: the placeable note rides inline, the rest stays below.
+  const shown = notesForDisplay({ codeShown: true, placed, notes })
+  assert.deepEqual([...shown.inline.keys()], [1])
+  assert.deepEqual(shown.below.map(note => note.noteId), ['b'])
+
+  // Code on screen but no rows yet (patch still loading): still all visible.
+  const loading = notesForDisplay({ codeShown: true, placed: undefined, notes })
+  assert.equal(loading.inline.size, 0)
+  assert.deepEqual(loading.below.map(note => note.noteId), ['a', 'b'])
 })
 
 test('toSplitRows keeps the no-newline marker full width and survives no header', () => {

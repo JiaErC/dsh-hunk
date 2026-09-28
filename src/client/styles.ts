@@ -88,11 +88,13 @@ export const styles = {
     color: token.textTertiary,
     fontSize: 11.5,
   },
+  /**
+   * One reviewed file. Deliberately unboxed: the only rounded frame on screen
+   * belongs to the diff body, so the box reads as "this is the code" instead of
+   * enclosing the review's notes along with it.
+   */
   card: {
     marginBottom: 8,
-    border: `1px solid ${token.border}`,
-    borderRadius: 8,
-    overflow: 'hidden',
   },
   cardHeader: {
     display: 'flex',
@@ -101,6 +103,7 @@ export const styles = {
     width: '100%',
     padding: '7px 9px',
     border: 'none',
+    borderRadius: 6,
     background: token.raised,
     color: token.text,
     cursor: 'pointer',
@@ -300,6 +303,8 @@ export const styles = {
     color: token.textTertiary,
     userSelect: 'none',
   },
+  /** The `-` / `+` marker, so each column reads like the TUI's diff rows. */
+  splitSign: { flex: '0 0 auto', width: 7, userSelect: 'none' },
   splitText: { flex: '1 1 auto', minWidth: 0 },
   splitDivider: { flex: '0 0 auto', width: 1, background: token.border },
   splitMeta: {

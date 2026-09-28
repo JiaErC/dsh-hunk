@@ -21,6 +21,7 @@ import type {
 } from '../shared/wire'
 import { groupNotes, pathKey } from '../shared/notes'
 import {
+  notesForDisplay,
   pickPatchHunk,
   placeNotes,
   toSplitRows,
@@ -194,11 +195,17 @@ function NoteView({ t, note }: { t: Translate; note: HunkReviewNote }): ReactNod
   )
 }
 
-/** One side of a split row: line number (when this side has one) plus the text. */
-function SplitSide({ cell, hue }: { cell: SplitCell | undefined; hue?: CSSProperties }): ReactNode {
+/** One side of a split row: line number, `-`/`+` sign, and the line itself. */
+function SplitSide(props: {
+  cell: SplitCell | undefined
+  sign: string
+  hue?: CSSProperties
+}): ReactNode {
+  const { cell, sign, hue } = props
   return (
     <span style={{ ...styles.splitSide, ...(hue ?? {}) } as CSSProperties}>
       <span style={styles.splitNo as CSSProperties}>{cell === undefined ? '' : cell.no}</span>
+      <span style={styles.splitSign as CSSProperties}>{cell === undefined ? '' : sign}</span>
       <span style={styles.splitText as CSSProperties}>{cell?.text ?? ''}</span>
     </span>
   )
@@ -225,11 +232,13 @@ function HunkDiff(props: {
                 <div style={styles.splitRow as CSSProperties}>
                   <SplitSide
                     cell={row.left}
+                    sign={row.kind === 'change' ? '-' : ' '}
                     hue={row.kind === 'change' && row.left !== undefined ? { ...styles.diffDel, ...styles.diffDelText } as CSSProperties : undefined}
                   />
                   <span style={styles.splitDivider as CSSProperties} />
                   <SplitSide
                     cell={row.right}
+                    sign={row.kind === 'change' ? '+' : ' '}
                     hue={row.kind === 'change' && row.right !== undefined ? { ...styles.diffAdd, ...styles.diffAddText } as CSSProperties : undefined}
                   />
                 </div>
@@ -247,7 +256,8 @@ function HunkDiff(props: {
 
 /**
  * One hunk: a collapsible row (index, section header, ranges, copy) over its
- * diff lines. Notes anchored to the hunk stay visible whether it is open.
+ * code. The row and its notes are always visible; only the code follows the
+ * disclosure, so collapsing a file leaves its review readable.
  */
 function HunkView(props: {
   t: Translate
@@ -257,9 +267,13 @@ function HunkView(props: {
   focused: boolean
   patchState: PatchState
   patchCapable: boolean
+  /** Set by a collapsed file row: the hunk's own state is ignored, code hidden. */
+  forceCollapsed?: boolean
   ensurePatch: () => Promise<Record<string, string>>
 }): ReactNode {
-  const { t, filePath, hunk, notes, focused, patchState, patchCapable, ensurePatch } = props
+  const {
+    t, filePath, hunk, notes, focused, patchState, patchCapable, forceCollapsed, ensurePatch,
+  } = props
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const ranges = hunkRanges(hunk, t)
@@ -272,10 +286,11 @@ function HunkView(props: {
     () => (rows === undefined ? undefined : placeNotes(rows, notes)),
     [rows, notes],
   )
-  // Open, the notes ride inside the diff under the lines they review; anything
-  // that cannot be placed — and everything while collapsed — stays below the
-  // hunk row, so no note is ever hidden by a disclosure state.
-  const notesBelow = placed === undefined ? notes : placed.unplaced
+  // The code follows the two disclosures (this hunk's own, and its file's);
+  // everything else about the hunk — its row and its notes — is always on
+  // screen, so collapsing a file leaves the review itself readable.
+  const codeShown = open && forceCollapsed !== true
+  const { inline, below } = notesForDisplay({ codeShown, placed, notes })
   const notice = !patchCapable || patchState.code === UNSUPPORTED
     // "This build cannot" is a different fact from "that read failed", and only
     // the first one tells the user to restart the host.
@@ -312,11 +327,11 @@ function HunkView(props: {
         <button
           type="button"
           style={styles.hunkRow as CSSProperties}
-          title={open ? t('hunk.collapse') : t('hunk.expand')}
-          aria-expanded={open}
+          title={codeShown ? t('hunk.collapse') : t('hunk.expand')}
+          aria-expanded={codeShown}
           onClick={toggle}
         >
-          <span style={styles.caret as CSSProperties}>{open ? '▼' : '▶'}</span>
+          <span style={styles.caret as CSSProperties}>{codeShown ? '▼' : '▶'}</span>
           <span style={styles.hunkIndex as CSSProperties}>#{hunk.index + 1}</span>
           <code style={styles.hunkHeader as CSSProperties}>{hunk.header}</code>
           {ranges !== '' && <span style={styles.muted as CSSProperties}>{ranges}</span>}
@@ -330,7 +345,7 @@ function HunkView(props: {
           {copied ? <CheckIcon /> : <CopyIcon />}
         </IconButton>
       </div>
-      {open && (
+      {codeShown && (
         <div style={styles.hunkBody as CSSProperties}>
           <div style={styles.locationRow as CSSProperties}>
             <span>{t('hunk.location')}</span>
@@ -339,10 +354,10 @@ function HunkView(props: {
           </div>
           {rows === undefined
             ? <div style={styles.diffNotice as CSSProperties}>{notice}</div>
-            : <HunkDiff rows={rows} notesByRow={placed?.byRow ?? new Map()} t={t} />}
+            : <HunkDiff rows={rows} notesByRow={inline} t={t} />}
         </div>
       )}
-      {notesBelow.map(note => <NoteView key={note.noteId} t={t} note={note} />)}
+      {below.map(note => <NoteView key={note.noteId} t={t} note={note} />)}
     </div>
   )
 }
@@ -382,31 +397,36 @@ function FileCard(props: {
         <span style={styles.badge as CSSProperties}>{t('summary.hunks', { n: file.hunks.length })}</span>
         {isFocused && <span style={styles.badgeFocus as CSSProperties}>{t('summary.focus')}</span>}
       </button>
-      {open && (
-        <div>
-          {file.hunks.map((hunk) => (
-            <HunkView
-              key={hunk.index}
-              t={t}
-              filePath={file.path}
-              hunk={hunk}
-              notes={grouped.byHunk.get(hunk.index) ?? []}
-              focused={isFocused && focusedHunk === hunk.index}
-              patchState={patchState}
-              patchCapable={patchCapable}
-              ensurePatch={ensurePatch}
-            />
-          ))}
-          {grouped.loose.length > 0 && (
-            <div style={styles.hunk as CSSProperties}>
-              <div style={styles.hunkHead as CSSProperties}>
-                <span style={styles.badge as CSSProperties}>{t('note.fileLevel')}</span>
-              </div>
-              {grouped.loose.map(note => <NoteView key={note.noteId} t={t} note={note} />)}
+      {/*
+        The hunk rows — and their notes — stay listed while the file is
+        collapsed; only the code follows the file's disclosure. So a collapsed
+        file still reads as a review, and expanding it puts the code (with the
+        notes on their own lines) back in place.
+      */}
+      <div>
+        {file.hunks.map((hunk) => (
+          <HunkView
+            key={hunk.index}
+            t={t}
+            filePath={file.path}
+            hunk={hunk}
+            notes={grouped.byHunk.get(hunk.index) ?? []}
+            focused={isFocused && focusedHunk === hunk.index}
+            patchState={patchState}
+            patchCapable={patchCapable}
+            forceCollapsed={!open}
+            ensurePatch={ensurePatch}
+          />
+        ))}
+        {grouped.loose.length > 0 && (
+          <div style={styles.hunk as CSSProperties}>
+            <div style={styles.hunkHead as CSSProperties}>
+              <span style={styles.badge as CSSProperties}>{t('note.fileLevel')}</span>
             </div>
-          )}
-        </div>
-      )}
+            {grouped.loose.map(note => <NoteView key={note.noteId} t={t} note={note} />)}
+          </div>
+        )}
+      </div>
     </section>
   )
 }
@@ -452,6 +472,11 @@ function EmptyState({ t, data }: { t: Translate; data: HunkStatePayload }): Reac
       <div>{t('empty.lead')}</div>
       <CommandLine t={t} text={`cd ${data.cwd} && hunk diff --watch`} />
       <div style={{ ...styles.muted, marginTop: 6 } as CSSProperties}>{t('empty.tip')}</div>
+      {data.sessions.length === 0 && (
+        // The common false alarm: a window is open but never registered with the
+        // daemon, so "no live session" here does not mean "nothing is running".
+        <div style={{ ...styles.muted, marginTop: 6 } as CSSProperties}>{t('empty.unregistered')}</div>
+      )}
       {data.otherRepos.length > 0 && (
         <>
           <div style={{ ...styles.secondary, marginTop: 8 } as CSSProperties}>{t('empty.others')}</div>

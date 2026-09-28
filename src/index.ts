@@ -186,6 +186,7 @@ export { isLoopbackHostname, isTrustedRequest } from './host/trust-fence'
 export { groupNotes, hunkOfNote, overlaps, pathKey } from './shared/notes'
 export {
   hunkLineNumbers,
+  notesForDisplay,
   parsePatchesPayload,
   patchLineKind,
   pickPatchHunk,
@@ -194,6 +195,7 @@ export {
   toSplitRows,
 } from './shared/patch'
 export type {
+  NotePlacement,
   PatchHunk,
   PatchLineKind,
   PatchesReadResult,

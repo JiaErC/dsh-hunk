@@ -235,6 +235,38 @@ export function placeNotes(rows: readonly SplitRow[], notes: readonly HunkReview
   return { byRow, unplaced }
 }
 
+/** Where one hunk's notes go, given whether its code is on screen. */
+export interface NotePlacement {
+  /** Row index → notes drawn inside the code, under that row. */
+  inline: Map<number, HunkReviewNote[]>
+  /** Notes drawn below the hunk row (every one of them while the code is hidden). */
+  below: readonly HunkReviewNote[]
+}
+
+/**
+ * Decide where a hunk's notes go.
+ *
+ * The rule that matters: while the code is hidden there is nothing to hang a
+ * note under, so every note drops below the hunk row. Getting this wrong makes
+ * notes disappear on collapse — invisible in code review, glaring to a reader
+ * who just lost their comments.
+ * @param options.codeShown - whether this hunk's diff is rendered.
+ * @param options.placed - the placement computed from the rows, when they exist.
+ * @param options.notes - the hunk's notes.
+ * @returns the notes to draw inline and the ones to draw below.
+ */
+export function notesForDisplay(options: {
+  codeShown: boolean
+  placed: PlacedNotes | undefined
+  notes: readonly HunkReviewNote[]
+}): NotePlacement {
+  const { codeShown, placed, notes } = options
+  if (!codeShown || placed === undefined) {
+    return { inline: new Map(), below: notes }
+  }
+  return { inline: placed.byRow, below: placed.unplaced }
+}
+
 /**
  * Normalize one patch read's response.
  *
