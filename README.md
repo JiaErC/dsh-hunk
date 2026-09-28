@@ -27,13 +27,31 @@ ctx.betterSidebar.registerTab(              GET /dsh-hunk/state?cwd=<会话 cwd>
 
 - **tab 注册**：`src/client/index.tsx` 用 `ctx.betterSidebar.registerTab(...)`
   注册 `dsh-hunk:review`；组件在 `src/client/HunkReviewTab.tsx`。
-- **一条路由**：`src/index.ts` 只注册 `/dsh-hunk/state`，把两条 CLI 命令的结果
-  合成一个 JSON envelope（`ok / cwd / sessions / matched / otherRepos / review /
-  reviewError`）。两条命令并发跑，各有一个超时预算。
+- **一条路由，两次读**：`src/index.ts` 只注册 `/dsh-hunk/state`。
+  - 默认（结构读）：`hunk session list --json` + `hunk session review --repo . --json
+    --include-notes` 并发跑，合成一个 JSON envelope（`ok / cwd / sessions / matched /
+    otherRepos / review / reviewError`）。
+  - `?patches=1`（变动读，按需）：同一条命令加 `--include-patch`，返回
+    `patches: { 文件路径 → 原始 unified diff 文本 }`。只有展开 hunk 或点复制时才请求，
+    主机侧 5 秒 TTL + 同键合并，避免每次刷新都重建整份 patch；没有 live 会话时
+    先用廉价的 `session list` 判掉，不去跑那条昂贵的命令。
 - **没有 live 会话时**：路由照样 200，`matched: null`，页面显示
   「先在终端运行 `cd <cwd> && hunk diff --watch`」并列出其它仓库的 live 窗口。
 - **两个「半」互相不认识**：它们只共享 `src/shared/` 里的纯类型与纯函数，因此
   client bundle 不需要任何 DSH 包（react 来自宿主的 module table）。
+
+## 界面
+
+- **顶部会话条**（`dsh-hunk working tree` 那块）是唯一显示汇总的地方：文件数、
+  注释总数、当前焦点、产生这份数据的命令。
+- **文件行**：路径、`+N −M`、hunk 数；点击折叠/展开这个文件。
+- **hunk 行**：`#序号 + @@ 段头 + 旧/新行范围`；点行展开看这段的**文件变动**
+  （带行号的 diff 正文，配色沿用宿主的 diff 令牌：增绿、删红、8% 底色），
+  展开区顶部写明这条 hunk 的**位置**（文件路径 + 行范围）。
+  hunk 行右上的**复制图标**把这一整段 hunk（`@@` 头 + 正文）复制成可直接粘贴的
+  patch 片段；没展开也能点，会先按需拉一次 patch 文本。
+- 注释挂在对应 hunk 下方；锚点失效的注释归到文件的「文件级」分组，不会消失。
+
 
 ## 目录
 
@@ -44,9 +62,10 @@ ctx.betterSidebar.registerTab(              GET /dsh-hunk/state?cwd=<会话 cwd>
 | `src/host/trust-fence.ts` | 浏览器信任围栏（同 `/api` 的规则：Host + 同源标记） |
 | `src/shared/wire.ts` | 两端共享的线上类型与错误码 |
 | `src/shared/notes.ts` | 注释→hunk 归位（按 `hunkIndex`，退回行范围重叠） |
+| `src/shared/patch.ts` | unified diff 文本 → 单条 hunk 切片、行号解析、行类型判定 |
 | `src/client/index.tsx` | client 半：注册 tab |
 | `src/client/HunkReviewTab.tsx` | tab 视图（会话条 + 文件/hunk/注释 + 刷新/复制） |
-| `src/client/api.ts` | 浏览器侧两次请求（cwd + state） |
+| `src/client/api.ts` | 浏览器侧请求（cwd 解析 + 结构读 + 按需 patch 读） |
 | `src/client/i18n.ts` | zh/en 词典，跟随 `ctx.locale` |
 | `src/client/styles.ts` | 全部走 `--dsw-alias-*` / `--dsw-font-mono` 主题令牌 |
 | `build.mjs` | esbuild：host 出 ESM，client 出 `__ModuleLoader__.load` 包装 |
@@ -58,7 +77,7 @@ ctx.betterSidebar.registerTab(              GET /dsh-hunk/state?cwd=<会话 cwd>
 ```powershell
 npm install
 npm run typecheck     # tsc --noEmit
-npm test              # 先构建，再跑 17 个用例（含真实 hunk CLI 活体用例）
+npm test              # 先构建，再跑 22 个用例（含真实 hunk CLI 活体用例）
 npm run preview       # 打印当前目录的 payload；npm run preview -- --json 看原文
 ```
 
@@ -100,6 +119,10 @@ npm run preview       # 打印当前目录的 payload；npm run preview -- --jso
 
 - 终端里先有 live Hunk 窗口：`cd <仓库> && hunk diff --watch`
   （看某个提交：`hunk show <ref>`）；本 tab 读的就是这个窗口。
+- **窗口必须还注册在 daemon 上**：`hunk session list` 要能列出它。daemon 中途重启过
+  （`hunk daemon serve` 换过进程）时，先开的窗口会失去注册——症状是 `hunk.exe` 进程还在，
+  但 `hunk session list` 报 `No active Hunk sessions`、tab 显示「没有检测到 live Hunk 会话」。
+  在窗口里 Ctrl+C 再用 `hunk diff --watch` 重开一次即可重新注册。
 - `hunk` 要在宿主进程的 PATH 上。装在别处时设 `DSH_HUNK_BIN`（例如
   `C:\Users\me\AppData\Local\Programs\hunk\hunk.exe`），或用
   `DSH_HUNK_TIMEOUT_MS` 调整每命令的超时（默认 15000 ms）。
@@ -117,7 +140,11 @@ npm run preview       # 打印当前目录的 payload；npm run preview -- --jso
 ## 已知限制（v1）
 
 - 只读：不能在 tab 里写/删注释、不能把 Hunk 窗口跳转到某个文件或 hunk。
-- 刷新是手动的（打开 tab / 切回 tab 时会自动读一次，没有轮询）。
+- 刷新是手动的（打开 tab / 切回 tab 时会自动读一次，没有轮询）；刷新会丢弃已缓存的
+  patch 文本，下次展开 hunk 时重新拉。
+- 变动读要给每个文件重建一份 patch，所以第一次展开 hunk 有一次可感知的等待；
+  之后同一 cwd 的展开与复制都走缓存。
 - 视图只验证到「host 路由返回真实数据 + client bundle 注册出正确的 tab 描述符」；
   浏览器里的观感需要人工确认（本仓库的自动化测试跑不出真实渲染）。
-- `lib/` 是构建产物（已 gitignore），挂载前需要 `npm run build`。
+- `lib/` 是构建产物（已 gitignore），挂载前需要 `npm run build`；改动 host 半后
+  `dsh web` 必须重启才会加载新的 `lib/index.js`。

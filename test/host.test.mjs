@@ -14,18 +14,26 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   HUNK_ERROR,
+  HUNK_PATCH_COMMAND,
   HunkRouteError,
+  clearPatchCache,
+  collectHunkPatches,
   collectHunkState,
   groupNotes,
+  hunkLineNumbers,
   hunkOfNote,
   isLoopbackHostname,
   isTrustedRequest,
   locationKey,
   matchSession,
   parseJson,
+  parsePatchesPayload,
+  patchLineKind,
+  pickPatchHunk,
   readReview,
   readSessions,
   resolveRequestCwd,
+  splitPatchHunks,
 } from '../lib/index.js'
 
 /** `hunk session list --json`, trimmed to the fields the tab shows. */
@@ -241,6 +249,61 @@ test('the fence admits this machine only', () => {
   assert.equal(isLoopbackHostname('127.0.0.1.evil.com'), false)
 })
 
+test('parsePatchesPayload refuses a structural payload and normalizes a patch one', () => {
+  // What a host build without the patch read answers this URL with.
+  const structural = {
+    ok: true,
+    cwd: 'E:/repo',
+    sessions: [],
+    matched: null,
+    otherRepos: [],
+    review: null,
+    reviewError: null,
+  }
+  assert.equal(parsePatchesPayload(structural), undefined)
+  assert.equal(parsePatchesPayload(undefined), undefined)
+  assert.equal(parsePatchesPayload('nope'), undefined)
+  assert.equal(parsePatchesPayload({ patches: ['not', 'a', 'map'] }), undefined)
+
+  // The real shape, including its soft-failure form.
+  assert.deepEqual(parsePatchesPayload({ patches: { 'a.ts': '@@ -1 +1 @@\n-x\n+y\n' } }), {
+    patches: { 'a.ts': '@@ -1 +1 @@\n-x\n+y\n' },
+    missing: [],
+    error: null,
+  })
+  assert.deepEqual(parsePatchesPayload({ patches: {}, missing: ['bin.png'], error: null }), {
+    patches: {},
+    missing: ['bin.png'],
+    error: null,
+  })
+  assert.deepEqual(parsePatchesPayload({ patches: {}, error: { code: 'no-live-session', message: 'none' } }), {
+    patches: {},
+    missing: [],
+    error: { code: 'no-live-session', message: 'none' },
+  })
+  // Gunk is dropped, never thrown: a newer host may add fields this build ignores.
+  assert.deepEqual(parsePatchesPayload({ patches: { 'a.ts': 42, 'b.ts': 'text' }, missing: [1, 'c.ts'] }), {
+    patches: { 'b.ts': 'text' },
+    missing: ['c.ts'],
+    error: null,
+  })
+})
+
+test('live: the state read advertises the patch capability', async (t) => {
+  let state
+  try {
+    state = await collectHunkState(process.cwd(), { bin: 'hunk', timeoutMs: 20_000 })
+  } catch (error) {
+    if (error instanceof HunkRouteError && error.code === HUNK_ERROR.cliMissing) {
+      t.skip('hunk CLI is not installed in this environment')
+      return
+    }
+    throw error
+  }
+  // The browser keys its "restart dsh web" copy off exactly this.
+  assert.equal(state.capabilities?.patches, true)
+})
+
 test('live: the real hunk CLI answers for this repository', async (t) => {
   let state
   try {
@@ -272,8 +335,132 @@ test('live: the real hunk CLI answers for this repository', async (t) => {
     for (const file of state.review.files) {
       assert.equal(typeof file.path, 'string')
       assert.ok(Array.isArray(file.hunks))
+      // The structural read never ships diff text; that is the patch read's job.
+      assert.equal(file.patch, undefined)
     }
   } else {
     assert.ok(state.reviewError !== null)
   }
+})
+
+test('patch text slices per hunk, keeps signs, and is copyable', () => {
+  const patch = [
+    'diff --git a/src/a.ts b/src/a.ts',
+    'index 111..222 100644',
+    '--- a/src/a.ts',
+    '+++ b/src/a.ts',
+    '@@ -1,3 +1,4 @@',
+    ' const a = 1',
+    '-const b = 2',
+    '+const b = 3',
+    '+const c = 4',
+    ' export { a }',
+    '@@ -20,2 +21,1 @@ tail',
+    ' keep',
+    '-gone',
+    '\\ No newline at end of file',
+    '',
+  ].join('\n')
+
+  const hunks = splitPatchHunks(patch)
+  assert.equal(hunks.length, 2)
+  assert.equal(hunks[0].header, '@@ -1,3 +1,4 @@')
+  assert.deepEqual(hunks[0].lines, [' const a = 1', '-const b = 2', '+const b = 3', '+const c = 4', ' export { a }'])
+  assert.equal(hunks[1].header, '@@ -20,2 +21,1 @@ tail')
+  assert.deepEqual(hunks[1].lines, [' keep', '-gone', '\\ No newline at end of file'])
+  // The copy text is a valid standalone patch fragment.
+  assert.ok(hunks[0].text.startsWith('@@ -1,3 +1,4 @@\n'))
+  assert.ok(hunks[0].text.endsWith(' export { a }\n'))
+
+  assert.deepEqual(hunkLineNumbers(hunks[0].header), { old: 1, line: 1 })
+  assert.deepEqual(hunkLineNumbers(hunks[1].header), { old: 20, line: 21 })
+  assert.equal(hunkLineNumbers('not a header'), undefined)
+
+  assert.equal(patchLineKind('+added'), 'add')
+  assert.equal(patchLineKind('-removed'), 'del')
+  assert.equal(patchLineKind(' context'), 'context')
+  assert.equal(patchLineKind('\\ No newline at end of file'), 'meta')
+})
+
+test('pickPatchHunk matches by header, falls back to index, and survives no patch', () => {
+  const patch = '@@ -1,1 +1,1 @@\n-a\n+b\n@@ -9,1 +9,2 @@\n c\n+d\n'
+  // Header match wins even when the review's index disagrees.
+  assert.equal(pickPatchHunk(patch, { index: 1, header: '@@ -1,1 +1,1 @@' }).lines[0], '-a')
+  // Index is the fallback for a normalized header.
+  assert.equal(pickPatchHunk(patch, { index: 1, header: '@@ rewritten @@' }).lines[1], '+d')
+  assert.equal(pickPatchHunk(undefined, { index: 0, header: '@@ -1 +1 @@' }), undefined)
+  assert.equal(pickPatchHunk('', { index: 0, header: '@@ -1 +1 @@' }), undefined)
+  assert.equal(pickPatchHunk('no hunks here', { index: 0, header: '@@ -1 +1 @@' }), undefined)
+})
+
+test('live: the patch read carries diff text per file, and caches it', async (t) => {
+  clearPatchCache()
+  let payload
+  try {
+    payload = await collectHunkPatches(process.cwd(), { bin: 'hunk', timeoutMs: 30_000 })
+  } catch (error) {
+    if (error instanceof HunkRouteError && error.code === HUNK_ERROR.cliMissing) {
+      t.skip('hunk CLI is not installed in this environment')
+      return
+    }
+    if (error instanceof HunkRouteError && error.code === HUNK_ERROR.cliTimeout) {
+      t.skip('hunk CLI did not answer in time')
+      return
+    }
+    throw error
+  }
+  assert.equal(payload.ok, true)
+  assert.equal(locationKey(payload.cwd), locationKey(process.cwd()))
+  assert.equal(typeof payload.patches, 'object')
+  if (payload.error !== null) {
+    // No window on this repo right now: an empty map with the reason.
+    assert.deepEqual(payload.patches, {})
+    return
+  }
+  const paths = Object.keys(payload.patches)
+  assert.ok(paths.length > 0)
+  for (const path of paths) {
+    assert.equal(typeof payload.patches[path], 'string')
+    assert.ok(payload.patches[path].length > 0)
+  }
+  // The command really asked for patch text; the flag is part of the contract.
+  assert.ok(HUNK_PATCH_COMMAND.endsWith('--include-patch'))
+  // Second call inside the TTL is served from the cache (same object).
+  const again = await collectHunkPatches(process.cwd(), { bin: 'hunk', timeoutMs: 30_000 })
+  assert.equal(again, payload)
+  clearPatchCache()
+})
+
+test('live: every hunk of every file has patch text to unfold', async (t) => {
+  clearPatchCache()
+  let state
+  let patches
+  try {
+    state = await collectHunkState(process.cwd(), { bin: 'hunk', timeoutMs: 20_000 })
+    patches = await collectHunkPatches(process.cwd(), { bin: 'hunk', timeoutMs: 30_000 })
+  } catch (error) {
+    if (error instanceof HunkRouteError
+      && (error.code === HUNK_ERROR.cliMissing || error.code === HUNK_ERROR.cliTimeout)) {
+      t.skip('hunk CLI unavailable in this environment')
+      return
+    }
+    throw error
+  }
+  if (state.review === null || patches.error !== null) {
+    t.skip('no live Hunk session for this repository right now')
+    return
+  }
+  // Every hunk the tree lists must resolve to a patch hunk, or the diff pane
+  // would show "loading" forever. Binary files legitimately have no patch.
+  for (const file of state.review.files) {
+    if (patches.missing.includes(file.path)) continue
+    for (const hunk of file.hunks) {
+      assert.notEqual(
+        pickPatchHunk(patches.patches[file.path], hunk),
+        undefined,
+        `${file.path} hunk #${hunk.index + 1} has no patch text`,
+      )
+    }
+  }
+  clearPatchCache()
 })

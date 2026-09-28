@@ -16,6 +16,12 @@
 /** Browser-facing route carrying one review snapshot. */
 export const HUNK_STATE_PATH = '/dsh-hunk/state'
 
+/**
+ * Query parameter that switches the route from the structural read to the
+ * patch read (`1` / `true`). Anything else keeps the structural read.
+ */
+export const HUNK_PATCH_PARAM = 'patches'
+
 /** The list command, spelled once so the UI can show the user what ran. */
 export const HUNK_LIST_COMMAND = 'hunk session list --json'
 
@@ -67,6 +73,12 @@ export interface HunkReviewFile {
   deletions: number
   hunkCount: number
   hunks: HunkReviewHunk[]
+  /**
+   * Raw unified diff text for this file. Only the patch read
+   * (`?patches=1`, which asks the CLI for `--include-patch`) carries it; the
+   * structural tree read never does, so it stays undefined there.
+   */
+  patch?: string
 }
 
 /** One note attached to the review (`--include-notes`). */
@@ -124,6 +136,31 @@ export interface HunkStatePayload {
   review: HunkReviewPayload | null
   /** Why the review is absent, when it is. */
   reviewError: { code: string; message: string } | null
+  /**
+   * Capabilities this host build offers. Absent from a host that predates them,
+   * which is how the browser tells "this build cannot do that yet" from "that
+   * call failed" — the two need different copy.
+   */
+  capabilities?: { patches?: boolean }
+}
+
+/**
+ * A successful patch read (`?patches=1`).
+ *
+ * The tree view never needs diff text, so the diff is a second, on-demand read:
+ * it makes the host run the review command once more with `--include-patch` and
+ * hand back one string per file.
+ */
+export interface HunkPatchesPayload {
+  ok: true
+  cwd: string
+  fetchedAt: string
+  /** File path → that file's raw unified diff text. */
+  patches: Record<string, string>
+  /** Files the review listed without any patch text. */
+  missing: string[]
+  /** Why the map is empty, when it is. */
+  error: { code: string; message: string } | null
 }
 
 /** A failed state read. */
@@ -132,7 +169,7 @@ export interface HunkErrorPayload {
   error: { code: string; message: string }
 }
 
-export type HunkRouteResponse = HunkStatePayload | HunkErrorPayload
+export type HunkRouteResponse = HunkStatePayload | HunkPatchesPayload | HunkErrorPayload
 
 /** Error codes this route emits (the browser switches copy on them). */
 export const HUNK_ERROR = {

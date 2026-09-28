@@ -43,6 +43,17 @@ export const zh = {
   'note.empty': '这份 review 还没有注释。',
   'lines.old': '旧 {n}',
   'lines.new': '新 {n}',
+  'hunk.changes': '文件变动',
+  'hunk.location': '位置',
+  'hunk.expand': '展开这个 hunk 的变动',
+  'hunk.collapse': '收起',
+  'hunk.copy': '复制这个 hunk',
+  'hunk.copied': '已复制',
+  'hunk.patchLoading': '正在读取变动…',
+  'hunk.patchFailed': '读取变动失败：{message}',
+  'hunk.patchMissing': '这份 review 没有该文件的 patch 文本',
+  'hunk.patchUnsupported': '宿主的 dsh-hunk 还没加载「变动读取」（需要重启 dsh web），重启后即可展开与复制',
+  'hunk.copyUnsupported': '宿主未加载变动读取，暂时无法复制',
 } as const
 
 /** 本插件的文案键。 */
@@ -80,6 +91,17 @@ export const en: Record<HunkKey, string> = {
   'note.empty': 'This review has no notes yet.',
   'lines.old': 'old {n}',
   'lines.new': 'new {n}',
+  'hunk.changes': 'Changes',
+  'hunk.location': 'Location',
+  'hunk.expand': 'Show this hunk’s changes',
+  'hunk.collapse': 'Collapse',
+  'hunk.copy': 'Copy this hunk',
+  'hunk.copied': 'Copied',
+  'hunk.patchLoading': 'Loading changes…',
+  'hunk.patchFailed': 'Could not load changes: {message}',
+  'hunk.patchMissing': 'This review carries no patch text for the file',
+  'hunk.patchUnsupported': 'This host has not loaded the patch read yet (restart dsh web), then hunks unfold and copy',
+  'hunk.copyUnsupported': 'The host has not loaded the patch read, so this hunk cannot be copied yet',
 }
 
 /**

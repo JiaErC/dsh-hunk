@@ -133,3 +133,35 @@ test('the route answers the state payload for this repository', async () => {
   assert.equal(head.body, undefined)
   assert.ok(Number(head.headers['Content-Length']) > 0)
 })
+
+test('the patch read answers the same route under ?patches=1', async () => {
+  const { ctx, routes } = registrationOf()
+  const originalLog = console.log
+  console.log = () => {}
+  try {
+    apply(ctx)
+  } finally {
+    console.log = originalLog
+  }
+  const route = routes[0]
+  const cwd = encodeURIComponent(process.cwd())
+  const response = await request(route, { url: `${HUNK_STATE_PATH}?cwd=${cwd}&patches=1` })
+
+  if (response.status === 503) {
+    assert.equal(response.json.error.code, HUNK_ERROR.cliMissing)
+    return
+  }
+  assert.equal(response.status, 200)
+  assert.equal(response.json.ok, true)
+  assert.equal(typeof response.json.patches, 'object')
+  assert.ok(Array.isArray(response.json.missing))
+
+  // Two shapes share one path: the structural read (no `patches` field) is
+  // still what the default read answers.
+  const structural = await request(route, { url: `${HUNK_STATE_PATH}?cwd=${cwd}` })
+  assert.equal(structural.status, 200)
+  assert.equal(structural.json.patches, undefined)
+  assert.ok(Array.isArray(structural.json.sessions))
+  // The browser tells "this build cannot" from "that read failed" through this.
+  assert.equal(structural.json.capabilities?.patches, true)
+})

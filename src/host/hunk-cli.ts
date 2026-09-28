@@ -21,6 +21,7 @@ import {
   HUNK_REVIEW_COMMAND,
   type HunkErrorCode,
   type HunkLineRange,
+  type HunkPatchesPayload,
   type HunkReviewFile,
   type HunkReviewHunk,
   type HunkReviewNote,
@@ -67,9 +68,15 @@ export interface HunkCliRun {
   spawnError: string | null
 }
 
-/** Whether an execFile failure was its timeout rather than the child exiting. */
+/**
+ * Whether an execFile failure was its timeout rather than the child exiting.
+ *
+ * `killed` is set only by the timeout kill; `signal` is `null` (not undefined)
+ * for an ordinary non-zero exit, so it must be tested for null, not undefined —
+ * otherwise every failure reads as a timeout and "no session" turns into a 504.
+ */
 function isTimeout(error: ExecFileException): boolean {
-  return error.killed === true || error.signal !== undefined
+  return error.killed === true || error.signal != null
 }
 
 /**
@@ -231,6 +238,8 @@ function readFile(value: unknown): HunkReviewFile | undefined {
     deletions: count(raw.deletions) ?? 0,
     hunkCount: count(raw.hunkCount) ?? hunks.length,
     hunks,
+    // Present only in a `--include-patch` read; the tree read omits it.
+    patch: typeof raw.patch === 'string' ? raw.patch : undefined,
   }
 }
 
@@ -439,5 +448,111 @@ export async function collectHunkState(
     otherRepos: otherRepoRoots(sessions, matched),
     review,
     reviewError,
+    // Tells a browser build what this host can answer; the patch read is the
+    // first optional capability, and its absence from an older host build is
+    // exactly what the tab reports as "restart dsh web".
+    capabilities: { patches: true },
   }
+}
+
+/** The patch command (the review command plus the one flag that carries diff text). */
+export const HUNK_PATCH_COMMAND = `${HUNK_REVIEW_COMMAND} --include-patch`
+
+/** How long one patch read is reused before the CLI is asked again. */
+const PATCH_CACHE_TTL_MS = 5_000
+
+interface PatchCacheEntry {
+  at: number
+  payload: HunkPatchesPayload
+}
+
+const patchCache = new Map<string, PatchCacheEntry>()
+const patchInFlight = new Map<string, Promise<HunkPatchesPayload>>()
+
+/** Drop the patch cache (tests; also the hook for a future explicit invalidation). */
+export function clearPatchCache(): void {
+  patchCache.clear()
+  patchInFlight.clear()
+}
+
+/** One patch read: the review command with `--include-patch`, folded to a path → text map. */
+async function readPatches(cwd: string, options: HunkCliOptions): Promise<HunkPatchesPayload> {
+  const base = { ok: true as const, cwd, fetchedAt: new Date().toISOString() }
+  const empty = (code: HunkErrorCode, message: string): HunkPatchesPayload =>
+    ({ ...base, patches: {}, missing: [], error: { code, message } })
+
+  // Ask the cheap question first: patch text can only come from a window that
+  // exists, and the patch command reconstructs one patch per file. Without a
+  // session there is nothing to fetch, so skip the expensive read entirely.
+  const listRun = await runHunkCli(['session', 'list', '--json'], cwd, options)
+  if (!listRun.ok && (listRun.spawnError !== null || listRun.timedOut)) {
+    throw failureOf(listRun, HUNK_ERROR.listFailed, 'hunk session list')
+  }
+  const matched = listRun.ok ? matchSession(readSessions(parseJson(listRun.stdout)), cwd) : undefined
+  if (matched === undefined) {
+    return empty(HUNK_ERROR.noSession, 'no live Hunk session for this repository')
+  }
+
+  const run = await runHunkCli(
+    ['session', 'review', '--repo', '.', '--json', '--include-notes', '--include-patch'],
+    cwd,
+    options,
+  )
+  if (!run.ok) {
+    // A broken installation or an aborted run is a route-level error; anything
+    // else (the window closed between the two reads, say) stays a soft failure.
+    if (run.spawnError !== null || run.timedOut) {
+      throw failureOf(run, HUNK_ERROR.reviewFailed, 'hunk session review --include-patch')
+    }
+    return empty(HUNK_ERROR.noSession, brief(run.stderr) || 'hunk session review --include-patch failed')
+  }
+  const review = readReview(parseJson(run.stdout))
+  if (review === undefined) {
+    return empty(
+      HUNK_ERROR.badJson,
+      `hunk session review --include-patch returned no readable review (${brief(run.stdout, 200)})`,
+    )
+  }
+  const patches: Record<string, string> = {}
+  const missing: string[] = []
+  for (const file of review.files) {
+    if (typeof file.patch === 'string' && file.patch !== '') patches[file.path] = file.patch
+    else missing.push(file.path)
+  }
+  return { ...base, patches, missing, error: null }
+}
+
+/**
+ * Read every file's raw diff text for one session cwd.
+ *
+ * On demand, not on every refresh: expanding a hunk is what needs diff text, and
+ * the review command reconstructs one patch per file. Concurrent callers share
+ * one run, and a short TTL keeps a burst of expansions (or a second tab) from
+ * spawning the CLI again.
+ * @param cwdInput - raw `cwd` query parameter (absolute path).
+ * @param options - executable and timeout; defaults to the plugin's.
+ * @returns the path → patch map, plus the files that shipped none.
+ * @throws {HunkRouteError} on a bad cwd or an unusable Hunk installation.
+ */
+export async function collectHunkPatches(
+  cwdInput: string | null | undefined,
+  options: HunkCliOptions = DEFAULT_HUNK_CLI_OPTIONS,
+): Promise<HunkPatchesPayload> {
+  const cwd = await resolveRequestCwd(cwdInput)
+  const key = locationKey(cwd)
+  const cached = patchCache.get(key)
+  if (cached !== undefined && Date.now() - cached.at < PATCH_CACHE_TTL_MS) return cached.payload
+  const running = patchInFlight.get(key)
+  if (running !== undefined) return running
+
+  const task = readPatches(cwd, options)
+    .then((payload) => {
+      patchCache.set(key, { at: Date.now(), payload })
+      return payload
+    })
+    .finally(() => {
+      patchInFlight.delete(key)
+    })
+  patchInFlight.set(key, task)
+  return task
 }

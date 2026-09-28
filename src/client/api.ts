@@ -5,7 +5,13 @@
  * better-sidebar's own `session.cwd` route when the scope does not carry it)
  * and this plugin's state route, which is what actually runs the Hunk CLI.
  */
-import { HUNK_STATE_PATH, type HunkRouteResponse, type HunkStatePayload } from '../shared/wire'
+import {
+  HUNK_PATCH_PARAM,
+  HUNK_STATE_PATH,
+  type HunkRouteResponse,
+  type HunkStatePayload,
+} from '../shared/wire'
+import { parsePatchesPayload, type PatchesReadResult } from '../shared/patch'
 
 /** One failed read, carrying the wire code so the view can explain itself. */
 export class HunkClientError extends Error {
@@ -54,14 +60,16 @@ export async function resolveSessionCwd(
 }
 
 /**
- * Read one review snapshot from the host route.
- * @param cwd - absolute session working directory (the CLI's own cwd).
+ * Fetch one JSON read from the host route.
+ * @param url - route URL including its query.
  * @param signal - aborts the request.
- * @returns the state payload.
+ * @returns the success payload (both reads share the `ok: true` discriminant).
  * @throws {HunkClientError} on a transport failure or a route error envelope.
  */
-export async function fetchHunkState(cwd: string, signal?: AbortSignal): Promise<HunkStatePayload> {
-  const url = `${HUNK_STATE_PATH}?cwd=${encodeURIComponent(cwd)}`
+async function requestRoute<T extends HunkRouteResponse>(
+  url: string,
+  signal?: AbortSignal,
+): Promise<T> {
   let response: Response
   try {
     response = await fetch(url, { headers: { accept: 'application/json' }, signal })
@@ -79,5 +87,40 @@ export async function fetchHunkState(cwd: string, signal?: AbortSignal): Promise
   if (!response.ok || body === undefined || body.ok !== true) {
     throw new HunkClientError('bad-response', `HTTP ${response.status}`)
   }
-  return body
+  return body as T
+}
+
+/**
+ * Read one review snapshot from the host route (the structural read).
+ * @param cwd - absolute session working directory (the CLI's own cwd).
+ * @param signal - aborts the request.
+ * @returns the state payload.
+ * @throws {HunkClientError} on a transport failure or a route error envelope.
+ */
+export async function fetchHunkState(cwd: string, signal?: AbortSignal): Promise<HunkStatePayload> {
+  return requestRoute<HunkStatePayload>(`${HUNK_STATE_PATH}?cwd=${encodeURIComponent(cwd)}`, signal)
+}
+
+/**
+ * Read every file's raw diff text (the on-demand patch read).
+ *
+ * Called the first time a hunk is expanded or copied, then cached by the caller:
+ * expanding a hunk is what needs diff text, and the host has to reconstruct one
+ * patch per file to answer.
+ * @param cwd - absolute session working directory.
+ * @param signal - aborts the request.
+ * @returns the path → patch map plus the files that shipped none.
+ * @throws {HunkClientError} on a transport failure, a route error envelope, or
+ *   a host build that answers this URL with something other than patch text
+ *   (code `patch-read-unsupported`).
+ */
+export async function fetchHunkPatches(cwd: string, signal?: AbortSignal): Promise<PatchesReadResult> {
+  const url = `${HUNK_STATE_PATH}?cwd=${encodeURIComponent(cwd)}&${HUNK_PATCH_PARAM}=1`
+  const body = await requestRoute<HunkRouteResponse>(url, signal)
+  const read = parsePatchesPayload(body)
+  if (read === undefined) {
+    // The host answered the structural payload: it predates the patch read.
+    throw new HunkClientError('patch-read-unsupported', 'this host build does not answer the patch read')
+  }
+  return read
 }

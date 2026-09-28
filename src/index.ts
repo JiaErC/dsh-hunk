@@ -20,11 +20,12 @@ import type { Context } from '@deepseek-ai/cordis'
 import {
   DEFAULT_HUNK_CLI_OPTIONS,
   HunkRouteError,
+  collectHunkPatches,
   collectHunkState,
   type HunkCliOptions,
 } from './host/hunk-cli'
 import { isTrustedRequest } from './host/trust-fence'
-import { HUNK_ERROR, HUNK_STATE_PATH, type HunkErrorPayload } from './shared/wire'
+import { HUNK_ERROR, HUNK_PATCH_PARAM, HUNK_STATE_PATH, type HunkErrorPayload } from './shared/wire'
 
 /** The host service this plugin needs before it can mount anything. */
 export const inject = ['webServer']
@@ -81,7 +82,11 @@ interface RouteDeps {
 }
 
 /**
- * Handle one state read: fence, parse `cwd`, run both Hunk commands, answer.
+ * Handle one read: fence, parse the query, run the Hunk commands, answer.
+ *
+ * Two reads share this path: the structural state (default) and the on-demand
+ * patch map (`?patches=1`), which is what lets a hunk expand into its diff text
+ * without paying for every patch on every refresh.
  */
 async function handleState(
   req: IncomingMessage,
@@ -98,17 +103,22 @@ async function handleState(
     return
   }
 
-  let cwd: string | null = null
+  let params: URLSearchParams
   try {
-    cwd = new URL(req.url ?? '/', 'http://localhost').searchParams.get('cwd')
+    params = new URL(req.url ?? '/', 'http://localhost').searchParams
   } catch {
     sendJson(res, 400, errorBody(HUNK_ERROR.missingCwd, 'unparsable request URL'), method)
     return
   }
+  const cwd = params.get('cwd')
+  const wantsPatches = params.get(HUNK_PATCH_PARAM)
+  const patches = wantsPatches === '1' || wantsPatches === 'true'
 
   try {
-    const state = await collectHunkState(cwd, deps.cli)
-    sendJson(res, 200, state, method)
+    const payload = patches
+      ? await collectHunkPatches(cwd, deps.cli)
+      : await collectHunkState(cwd, deps.cli)
+    sendJson(res, 200, payload, method)
   } catch (error) {
     if (error instanceof HunkRouteError) {
       sendJson(res, error.status, errorBody(error.code, error.message), method)
@@ -159,7 +169,10 @@ export function apply(ctx: Context & HostContext): void {
  */
 export {
   DEFAULT_HUNK_CLI_OPTIONS,
+  HUNK_PATCH_COMMAND,
   HunkRouteError,
+  clearPatchCache,
+  collectHunkPatches,
   collectHunkState,
   locationKey,
   matchSession,
@@ -172,8 +185,17 @@ export {
 export { isLoopbackHostname, isTrustedRequest } from './host/trust-fence'
 export { groupNotes, hunkOfNote, overlaps, pathKey } from './shared/notes'
 export {
+  hunkLineNumbers,
+  parsePatchesPayload,
+  patchLineKind,
+  pickPatchHunk,
+  splitPatchHunks,
+} from './shared/patch'
+export type { PatchHunk, PatchLineKind, PatchesReadResult } from './shared/patch'
+export {
   HUNK_ERROR,
   HUNK_LIST_COMMAND,
+  HUNK_PATCH_PARAM,
   HUNK_REVIEW_COMMAND,
   HUNK_STATE_PATH,
 } from './shared/wire'
@@ -181,6 +203,7 @@ export type {
   HunkErrorCode,
   HunkErrorPayload,
   HunkLineRange,
+  HunkPatchesPayload,
   HunkReviewFile,
   HunkReviewHunk,
   HunkReviewNote,
