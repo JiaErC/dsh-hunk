@@ -189,9 +189,18 @@ export {
   parsePatchesPayload,
   patchLineKind,
   pickPatchHunk,
+  placeNotes,
   splitPatchHunks,
+  toSplitRows,
 } from './shared/patch'
-export type { PatchHunk, PatchLineKind, PatchesReadResult } from './shared/patch'
+export type {
+  PatchHunk,
+  PatchLineKind,
+  PatchesReadResult,
+  PlacedNotes,
+  SplitCell,
+  SplitRow,
+} from './shared/patch'
 export {
   HUNK_ERROR,
   HUNK_LIST_COMMAND,

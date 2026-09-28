@@ -273,4 +273,47 @@ export const styles = {
   diffDelText: { color: token.danger },
   diffMetaText: { color: token.textTertiary, fontStyle: 'italic' },
   diffNotice: { padding: '2px 8px', color: token.textTertiary, fontSize: 11 },
+
+  /* ── side-by-side diff rows (left = old, right = new) ──────────────────── */
+
+  splitRow: {
+    display: 'flex',
+    alignItems: 'stretch',
+    fontFamily: token.mono,
+    fontSize: 11,
+    lineHeight: '17px',
+  },
+  splitSide: {
+    flex: '1 1 50%',
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 5,
+    padding: '0 6px',
+    whiteSpace: 'pre-wrap',
+    overflowWrap: 'anywhere',
+  },
+  splitNo: {
+    flex: '0 0 auto',
+    width: 24,
+    textAlign: 'right',
+    color: token.textTertiary,
+    userSelect: 'none',
+  },
+  splitText: { flex: '1 1 auto', minWidth: 0 },
+  splitDivider: { flex: '0 0 auto', width: 1, background: token.border },
+  splitMeta: {
+    padding: '0 8px',
+    color: token.textTertiary,
+    fontStyle: 'italic',
+    whiteSpace: 'pre-wrap',
+    overflowWrap: 'anywhere',
+  },
+  /** A note drawn inside the diff, directly under the lines it reviews. */
+  noteInline: {
+    margin: '1px 0 3px',
+    paddingLeft: 8,
+    borderLeft: `2px solid ${token.accent}`,
+    background: token.raised,
+  },
 } satisfies Record<string, CSSProperties>

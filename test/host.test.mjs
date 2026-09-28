@@ -30,10 +30,12 @@ import {
   parsePatchesPayload,
   patchLineKind,
   pickPatchHunk,
+  placeNotes,
   readReview,
   readSessions,
   resolveRequestCwd,
   splitPatchHunks,
+  toSplitRows,
 } from '../lib/index.js'
 
 /** `hunk session list --json`, trimmed to the fields the tab shows. */
@@ -247,6 +249,97 @@ test('the fence admits this machine only', () => {
   assert.equal(isTrustedRequest({ headers: { host: '192.168.1.5:3080' } }, ['192.168.1.5:3080']), true)
   assert.equal(isLoopbackHostname('127.0.0.1'), true)
   assert.equal(isLoopbackHostname('127.0.0.1.evil.com'), false)
+})
+
+test('toSplitRows pairs deletions with additions and numbers both sides', () => {
+  // context, a 2-for-2 replacement, a pure addition, a pure deletion, a marker.
+  const patch = {
+    header: '@@ -10,4 +10,4 @@',
+    lines: [
+      ' const keep = 1',
+      '-const a = 1',
+      '-const b = 2',
+      '+const a = 10',
+      '+const b = 20',
+      '+const c = 30',
+      ' const tail = 4',
+      '-gone',
+    ],
+    text: '',
+  }
+  const rows = toSplitRows(patch)
+
+  // context first: same text on both sides, numbered from the header.
+  assert.equal(rows[0].kind, 'context')
+  assert.deepEqual(rows[0].left, { no: 10, text: 'const keep = 1' })
+  assert.deepEqual(rows[0].right, { no: 10, text: 'const keep = 1' })
+
+  // the replacement: deletion left, addition right, paired row by row.
+  assert.deepEqual(rows[1], {
+    kind: 'change',
+    left: { no: 11, text: 'const a = 1' },
+    right: { no: 11, text: 'const a = 10' },
+  })
+  assert.deepEqual(rows[2], {
+    kind: 'change',
+    left: { no: 12, text: 'const b = 2' },
+    right: { no: 12, text: 'const b = 20' },
+  })
+  // the longer run's tail keeps one side empty — here an addition-only row.
+  assert.deepEqual(rows[3], { kind: 'change', right: { no: 13, text: 'const c = 30' } })
+
+  // context, then a deletion-only row.
+  assert.equal(rows[4].kind, 'context')
+  assert.deepEqual(rows[4].right, { no: 14, text: 'const tail = 4' })
+  assert.deepEqual(rows[5], { kind: 'change', left: { no: 14, text: 'gone' } })
+  assert.equal(rows.length, 6)
+})
+
+test('toSplitRows keeps the no-newline marker full width and survives no header', () => {
+  const patch = {
+    header: '@@ -1 +1 @@',
+    lines: ['-a', '+b', '\\ No newline at end of file'],
+    text: '',
+  }
+  const rows = toSplitRows(patch)
+  assert.deepEqual(rows[0], { kind: 'change', left: { no: 1, text: 'a' }, right: { no: 1, text: 'b' } })
+  assert.deepEqual(rows[1], { kind: 'meta', text: '\\ No newline at end of file' })
+
+  // No parsable header: numbering starts at 1 rather than throwing.
+  const unnumbered = toSplitRows({ header: '@@ rewritten @@', lines: ['+x'], text: '' })
+  assert.deepEqual(unnumbered, [{ kind: 'change', right: { no: 1, text: 'x' } }])
+})
+
+test('placeNotes hangs a note under the last line of the range it reviews', () => {
+  const rows = toSplitRows({
+    header: '@@ -10,3 +10,3 @@',
+    lines: [' keep', '-old one', '+new one', ' tail'],
+    text: '',
+  })
+  // rows: 0 context(old10/new10), 1 change(old11/new11), 2 context(old12/new12)
+  const note = (id, range) => ({ noteId: id, source: 'agent', filePath: 'a.ts', body: id, ...range })
+
+  const newSide = placeNotes(rows, [note('n1', { newRange: [11, 11] })])
+  assert.deepEqual([...newSide.byRow.keys()], [1])
+  assert.deepEqual(newSide.unplaced, [])
+
+  // An old-side anchor lands on the deletion row.
+  const oldSide = placeNotes(rows, [note('n2', { oldRange: [11, 11] })])
+  assert.deepEqual([...oldSide.byRow.keys()], [1])
+
+  // A range hangs under its LAST line, and both sides of a note prefer new.
+  const range = placeNotes(rows, [note('n3', { oldRange: [10, 12], newRange: [10, 12] })])
+  assert.deepEqual([...range.byRow.keys()], [2])
+
+  // Two notes on one line share a bucket; an anchor outside the rows is kept.
+  const mixed = placeNotes(rows, [
+    note('n4', { newRange: [12, 12] }),
+    note('n5', { newRange: [12, 12] }),
+    note('n6', { newRange: [99, 99] }),
+    note('n7', {}),
+  ])
+  assert.deepEqual(mixed.byRow.get(2).map(item => item.noteId), ['n4', 'n5'])
+  assert.deepEqual(mixed.unplaced.map(item => item.noteId), ['n6', 'n7'])
 })
 
 test('parsePatchesPayload refuses a structural payload and normalizes a patch one', () => {

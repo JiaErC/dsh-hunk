@@ -9,7 +9,7 @@
  * The refresh button re-runs the host route (which re-runs the Hunk CLI);
  * nothing here writes to the review.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { TabComponentProps } from 'dsh-better-sidebar/client/service'
 import type {
   HunkReviewFile,
@@ -20,7 +20,14 @@ import type {
   HunkStatePayload,
 } from '../shared/wire'
 import { groupNotes, pathKey } from '../shared/notes'
-import { hunkLineNumbers, patchLineKind, pickPatchHunk, type PatchHunk } from '../shared/patch'
+import {
+  pickPatchHunk,
+  placeNotes,
+  toSplitRows,
+  type PatchHunk,
+  type SplitCell,
+  type SplitRow,
+} from '../shared/patch'
 import { HunkClientError, fetchHunkPatches, fetchHunkState, isAbort, messageOf, resolveSessionCwd } from './api'
 import { useTranslate, type Translate } from './i18n'
 import { styles, token } from './styles'
@@ -187,65 +194,53 @@ function NoteView({ t, note }: { t: Translate; note: HunkReviewNote }): ReactNod
   )
 }
 
-/** The diff lines of one hunk, coloured like the host's diff view. */
+/** One side of a split row: line number (when this side has one) plus the text. */
+function SplitSide({ cell, hue }: { cell: SplitCell | undefined; hue?: CSSProperties }): ReactNode {
+  return (
+    <span style={{ ...styles.splitSide, ...(hue ?? {}) } as CSSProperties}>
+      <span style={styles.splitNo as CSSProperties}>{cell === undefined ? '' : cell.no}</span>
+      <span style={styles.splitText as CSSProperties}>{cell?.text ?? ''}</span>
+    </span>
+  )
+}
+
+/**
+ * The side-by-side body of one hunk: deletions on the left, additions on the
+ * right, context on both — with the hunk's notes drawn directly under the rows
+ * they review.
+ */
 function HunkDiff(props: {
+  rows: readonly SplitRow[]
+  notesByRow: Map<number, HunkReviewNote[]>
   t: Translate
-  filePath: string
-  hunk: HunkReviewHunk
-  patch: PatchHunk | undefined
-  patchState: PatchState
-  patchCapable: boolean
 }): ReactNode {
-  const { t, filePath, hunk, patch, patchState, patchCapable } = props
-  if (patch === undefined) {
-    // Order matters: "this build cannot" is a different fact from "that read
-    // failed", and only the first one tells the user to restart the host.
-    const notice = !patchCapable || patchState.code === UNSUPPORTED
-      ? t('hunk.patchUnsupported')
-      : patchState.status === 'error'
-        ? t('hunk.patchFailed', { message: patchState.message ?? patchState.code ?? '' })
-        : patchState.status === 'ready' && patchState.missing.includes(filePath)
-          ? t('hunk.patchMissing')
-          : t('hunk.patchLoading')
-    return <div style={styles.diffNotice as CSSProperties}>{notice}</div>
-  }
-  const start = hunkLineNumbers(patch.header)
-  let oldNo = start?.old ?? 0
-  let newNo = start?.line ?? 0
+  const { rows, notesByRow, t } = props
   return (
     <div style={styles.diffBody as CSSProperties}>
-      {patch.lines.map((line, index) => {
-        const kind = patchLineKind(line)
-        const showsOld = kind === 'context' || kind === 'del'
-        const showsNew = kind === 'context' || kind === 'add'
-        const oldLabel = showsOld ? String(oldNo) : ''
-        const newLabel = showsNew ? String(newNo) : ''
-        if (kind === 'context') {
-          oldNo += 1
-          newNo += 1
-        } else if (kind === 'del') oldNo += 1
-        else if (kind === 'add') newNo += 1
-        const hue = kind === 'add'
-          ? styles.diffAddText
-          : kind === 'del'
-            ? styles.diffDelText
-            : kind === 'meta'
-              ? styles.diffMetaText
-              : undefined
-        const tint = kind === 'add' ? styles.diffAdd : kind === 'del' ? styles.diffDel : undefined
-        return (
-          <div key={index} style={{ ...styles.diffRow, ...(tint ?? {}) } as CSSProperties}>
-            <span style={styles.diffNo as CSSProperties}>{oldLabel}</span>
-            <span style={styles.diffNo as CSSProperties}>{newLabel}</span>
-            <span style={{ ...styles.diffSign, ...(hue ?? {}) } as CSSProperties}>
-              {kind === 'meta' ? '' : line.slice(0, 1)}
-            </span>
-            <span style={{ ...styles.diffText, ...(hue ?? {}) } as CSSProperties}>
-              {kind === 'meta' ? line : line.slice(1)}
-            </span>
-          </div>
-        )
-      })}
+      {rows.map((row, index) => (
+        <Fragment key={index}>
+          {row.kind === 'meta'
+            ? <div style={styles.splitMeta as CSSProperties}>{row.text ?? ''}</div>
+            : (
+                <div style={styles.splitRow as CSSProperties}>
+                  <SplitSide
+                    cell={row.left}
+                    hue={row.kind === 'change' && row.left !== undefined ? { ...styles.diffDel, ...styles.diffDelText } as CSSProperties : undefined}
+                  />
+                  <span style={styles.splitDivider as CSSProperties} />
+                  <SplitSide
+                    cell={row.right}
+                    hue={row.kind === 'change' && row.right !== undefined ? { ...styles.diffAdd, ...styles.diffAddText } as CSSProperties : undefined}
+                  />
+                </div>
+              )}
+          {(notesByRow.get(index) ?? []).map(note => (
+            <div key={note.noteId} style={styles.noteInline as CSSProperties}>
+              <NoteView t={t} note={note} />
+            </div>
+          ))}
+        </Fragment>
+      ))}
     </div>
   )
 }
@@ -272,6 +267,24 @@ function HunkView(props: {
     () => pickPatchHunk(patchState.map[filePath], hunk),
     [patchState.map, filePath, hunk],
   )
+  const rows = useMemo(() => (patch === undefined ? undefined : toSplitRows(patch)), [patch])
+  const placed = useMemo(
+    () => (rows === undefined ? undefined : placeNotes(rows, notes)),
+    [rows, notes],
+  )
+  // Open, the notes ride inside the diff under the lines they review; anything
+  // that cannot be placed — and everything while collapsed — stays below the
+  // hunk row, so no note is ever hidden by a disclosure state.
+  const notesBelow = placed === undefined ? notes : placed.unplaced
+  const notice = !patchCapable || patchState.code === UNSUPPORTED
+    // "This build cannot" is a different fact from "that read failed", and only
+    // the first one tells the user to restart the host.
+    ? t('hunk.patchUnsupported')
+    : patchState.status === 'error'
+      ? t('hunk.patchFailed', { message: patchState.message ?? patchState.code ?? '' })
+      : patchState.status === 'ready' && patchState.missing.includes(filePath)
+        ? t('hunk.patchMissing')
+        : t('hunk.patchLoading')
 
   const toggle = (): void => {
     const next = !open
@@ -324,17 +337,12 @@ function HunkView(props: {
             <span style={styles.locationPath as CSSProperties}>{`${filePath}${ranges === '' ? '' : ` · ${ranges}`}`}</span>
             <span>{t('hunk.changes')}</span>
           </div>
-          <HunkDiff
-            t={t}
-            filePath={filePath}
-            hunk={hunk}
-            patch={patch}
-            patchState={patchState}
-            patchCapable={patchCapable}
-          />
+          {rows === undefined
+            ? <div style={styles.diffNotice as CSSProperties}>{notice}</div>
+            : <HunkDiff rows={rows} notesByRow={placed?.byRow ?? new Map()} t={t} />}
         </div>
       )}
-      {notes.map(note => <NoteView key={note.noteId} t={t} note={note} />)}
+      {notesBelow.map(note => <NoteView key={note.noteId} t={t} note={note} />)}
     </div>
   )
 }
