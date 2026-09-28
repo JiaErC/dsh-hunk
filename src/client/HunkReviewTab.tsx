@@ -1,0 +1,417 @@
+/**
+ * The「Hunk 评审」tab body.
+ *
+ * Read-only view over one live Hunk session: the session strip, then every
+ * reviewed file with its hunks and the notes anchored to them. A refresh
+ * button re-runs the host route (which re-runs the Hunk CLI); nothing here
+ * writes to the review.
+ */
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import type { TabComponentProps } from 'dsh-better-sidebar/client/service'
+import type {
+  HunkReviewFile,
+  HunkReviewHunk,
+  HunkReviewNote,
+  HunkReviewPayload,
+  HunkSessionSummary,
+  HunkStatePayload,
+} from '../shared/wire'
+import { groupNotes, pathKey } from '../shared/notes'
+import { HunkClientError, fetchHunkState, isAbort, messageOf, resolveSessionCwd } from './api'
+import { useTranslate, type Translate } from './i18n'
+import { styles, token } from './styles'
+
+/** Render one inclusive line range. */
+function rangeLabel(range: [number, number] | undefined, t: Translate, side: 'old' | 'new'): string | undefined {
+  if (range === undefined) return undefined
+  const label = range[0] === range[1] ? `${range[0]}` : `${range[0]}-${range[1]}`
+  return t(side === 'old' ? 'lines.old' : 'lines.new', { n: label })
+}
+
+/** Local wall-clock time for one ISO stamp, or the raw text when unparsable. */
+function formatTime(stamp: string | undefined): string | undefined {
+  if (stamp === undefined) return undefined
+  const parsed = new Date(stamp)
+  if (Number.isNaN(parsed.getTime())) return stamp
+  return parsed.toLocaleTimeString()
+}
+
+/** A button that keeps its own hover state (the tab body stays untouched). */
+function Button(props: {
+  label: string
+  title?: string
+  disabled?: boolean
+  onClick: () => void
+}): ReactNode {
+  const [hover, setHover] = useState(false)
+  const style: CSSProperties = {
+    ...styles.button,
+    ...(hover && props.disabled !== true ? { background: token.hover } : {}),
+    ...(props.disabled === true ? styles.buttonBusy : {}),
+  }
+  return (
+    <button
+      type="button"
+      style={style}
+      title={props.title ?? props.label}
+      disabled={props.disabled === true}
+      onMouseEnter={() => { setHover(true) }}
+      onMouseLeave={() => { setHover(false) }}
+      onClick={props.onClick}
+    >
+      {props.label}
+    </button>
+  )
+}
+
+/** A command line with a copy affordance. */
+function CommandLine({ t, text }: { t: Translate; text: string }): ReactNode {
+  const [copied, setCopied] = useState(false)
+  const copy = useCallback(() => {
+    void (async () => {
+      try {
+        await navigator.clipboard.writeText(text)
+        setCopied(true)
+      } catch (error) {
+        console.error('[dsh-hunk] clipboard write failed:', error)
+      }
+    })()
+  }, [text])
+  return (
+    <div style={styles.codeRow as CSSProperties}>
+      <code style={styles.codeRowCode as CSSProperties}>{text}</code>
+      <Button label={copied ? t('action.copied') : t('action.copy')} onClick={copy} />
+    </div>
+  )
+}
+
+/** One note: source badge, anchor, and body. */
+function NoteView({ t, note }: { t: Translate; note: HunkReviewNote }): ReactNode {
+  const source = note.source === 'user'
+    ? t('note.user')
+    : note.source === 'agent'
+      ? t('note.agent')
+      : t('note.ai')
+  const anchor = [
+    rangeLabel(note.oldRange, t, 'old'),
+    rangeLabel(note.newRange, t, 'new'),
+  ].filter((part): part is string => part !== undefined).join(' · ')
+  const created = formatTime(note.createdAt)
+  return (
+    <article style={styles.note as CSSProperties}>
+      <div style={styles.noteMeta as CSSProperties}>
+        <span style={styles.badge as CSSProperties}>{source}</span>
+        {note.author !== undefined && <span>{note.author}</span>}
+        {note.title !== undefined && <span style={styles.noteTitle as CSSProperties}>{note.title}</span>}
+        {anchor !== '' && <span>{anchor}</span>}
+        {created !== undefined && <span>{created}</span>}
+      </div>
+      {note.body !== '' && <div style={styles.noteBody as CSSProperties}>{note.body}</div>}
+    </article>
+  )
+}
+
+/** One hunk: header, ranges, and its notes. */
+function HunkView(props: {
+  t: Translate
+  hunk: HunkReviewHunk
+  notes: readonly HunkReviewNote[]
+  focused: boolean
+}): ReactNode {
+  const { t, hunk, notes, focused } = props
+  const ranges = [rangeLabel(hunk.oldRange, t, 'old'), rangeLabel(hunk.newRange, t, 'new')]
+    .filter((part): part is string => part !== undefined)
+    .join(' · ')
+  return (
+    <div style={styles.hunk as CSSProperties}>
+      <div style={styles.hunkHead as CSSProperties}>
+        <span style={styles.hunkIndex as CSSProperties}>#{hunk.index + 1}</span>
+        <code style={styles.hunkHeader as CSSProperties}>{hunk.header}</code>
+        {focused && <span style={styles.badgeFocus as CSSProperties}>{t('summary.focus')}</span>}
+        {ranges !== '' && <span style={styles.muted as CSSProperties}>{ranges}</span>}
+      </div>
+      {notes.map(note => <NoteView key={note.noteId} t={t} note={note} />)}
+    </div>
+  )
+}
+
+/** One reviewed file: collapsible header plus its hunks and notes. */
+function FileCard(props: {
+  t: Translate
+  file: HunkReviewFile
+  notes: readonly HunkReviewNote[]
+  focusedPath: string | undefined
+  focusedHunk: number | undefined
+}): ReactNode {
+  const { t, file, notes, focusedPath, focusedHunk } = props
+  const [open, setOpen] = useState(true)
+  const grouped = useMemo(() => groupNotes(file, notes), [file, notes])
+  const noteCount = notes.length
+  const isFocused = focusedPath !== undefined && pathKey(focusedPath) === pathKey(file.path)
+  return (
+    <section style={styles.card as CSSProperties}>
+      <button
+        type="button"
+        style={styles.cardHeader as CSSProperties}
+        onClick={() => { setOpen(value => !value) }}
+        title={file.path}
+      >
+        <span style={styles.caret as CSSProperties}>{open ? '▼' : '▶'}</span>
+        <span style={styles.filePath as CSSProperties}>{file.path}</span>
+        {file.previousPath !== undefined && (
+          <span style={styles.previousPath as CSSProperties}>{`← ${file.previousPath}`}</span>
+        )}
+        <span style={styles.counts as CSSProperties}>
+          <span style={styles.additions as CSSProperties}>{`+${file.additions}`}</span>
+          <span style={styles.deletions as CSSProperties}>{`−${file.deletions}`}</span>
+        </span>
+        <span style={styles.badge as CSSProperties}>{t('summary.hunks', { n: file.hunks.length })}</span>
+        {noteCount > 0 && <span style={styles.badge as CSSProperties}>{t('summary.notes', { n: noteCount })}</span>}
+        {isFocused && <span style={styles.badgeFocus as CSSProperties}>{t('summary.focus')}</span>}
+      </button>
+      {open && (
+        <div>
+          {file.hunks.map((hunk) => (
+            <HunkView
+              key={hunk.index}
+              t={t}
+              hunk={hunk}
+              notes={grouped.byHunk.get(hunk.index) ?? []}
+              focused={isFocused && focusedHunk === hunk.index}
+            />
+          ))}
+          {grouped.loose.length > 0 && (
+            <div style={styles.hunk as CSSProperties}>
+              <div style={styles.hunkHead as CSSProperties}>
+                <span style={styles.badge as CSSProperties}>{t('note.fileLevel')}</span>
+              </div>
+              {grouped.loose.map(note => <NoteView key={note.noteId} t={t} note={note} />)}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
+/** The session strip above the file list. */
+function SessionStrip(props: {
+  t: Translate
+  data: HunkStatePayload
+  review: HunkReviewPayload
+  session: HunkSessionSummary | undefined
+}): ReactNode {
+  const { t, data, review, session } = props
+  const focusPath = session?.selectedFilePath ?? review.selectedFilePath
+  const focusHunk = session?.selectedHunkIndex ?? review.selectedHunkIndex
+  const focus = focusPath === undefined
+    ? t('summary.noFocus')
+    : `${focusPath}${focusHunk === undefined ? '' : ` #${focusHunk + 1}`}`
+  return (
+    <div style={styles.strip as CSSProperties}>
+      <div style={styles.stripTitle as CSSProperties}>{session?.title ?? review.title}</div>
+      <div style={styles.stripMeta as CSSProperties}>
+        <span>{session?.sourceLabel ?? review.sourceLabel}</span>
+        <span>·</span>
+        <span>{t('summary.files', { n: review.files.length })}</span>
+        <span>·</span>
+        <span>{t('summary.notes', { n: review.reviewNotes.length })}</span>
+        <span>·</span>
+        <span>{`${t('summary.focus')}: ${focus}`}</span>
+      </div>
+      <div style={styles.stripMeta as CSSProperties}>
+        <span>{t('summary.commands')}</span>
+        <code>{data.commands.review}</code>
+      </div>
+    </div>
+  )
+}
+
+/** The "no live session" state: exactly what to run, in which directory. */
+function EmptyState({ t, data }: { t: Translate; data: HunkStatePayload }): ReactNode {
+  return (
+    <div style={styles.empty as CSSProperties}>
+      <div style={styles.emptyTitle as CSSProperties}>{t('empty.title')}</div>
+      <div>{t('empty.lead')}</div>
+      <CommandLine t={t} text={`cd ${data.cwd} && hunk diff --watch`} />
+      <div style={{ ...styles.muted, marginTop: 6 } as CSSProperties}>{t('empty.tip')}</div>
+      {data.otherRepos.length > 0 && (
+        <>
+          <div style={{ ...styles.secondary, marginTop: 8 } as CSSProperties}>{t('empty.others')}</div>
+          <ul style={styles.list as CSSProperties}>
+            {data.otherRepos.map(repo => <li key={repo}>{repo}</li>)}
+          </ul>
+        </>
+      )}
+      {data.reviewError !== null && (
+        <div style={{ ...styles.muted, marginTop: 8 } as CSSProperties}>
+          {`${data.reviewError.code}: ${data.reviewError.message}`}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** A route-level failure. */
+function FailureBlock(props: {
+  t: Translate
+  failure: { code: string; message: string }
+  onRetry: () => void
+}): ReactNode {
+  const { t, failure, onRetry } = props
+  return (
+    <div style={styles.failure as CSSProperties}>
+      <div style={styles.failureTitle as CSSProperties}>{`${t('error.title')} (${failure.code})`}</div>
+      <div style={styles.failureMessage as CSSProperties}>{failure.message}</div>
+      <div style={{ marginTop: 8 }}>
+        <Button label={t('action.retry')} onClick={onRetry} />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The tab body.
+ * @param props - better-sidebar's tab component props.
+ * @returns the rendered view.
+ */
+export function HunkReviewTab({ ctx, scope, visible }: TabComponentProps): ReactNode {
+  const t = useTranslate(ctx)
+  const [cwd, setCwd] = useState<string | undefined>(
+    scope.cwd !== undefined && scope.cwd !== '' ? scope.cwd : undefined,
+  )
+  const [cwdFailed, setCwdFailed] = useState(false)
+  const [data, setData] = useState<HunkStatePayload | null>(null)
+  const [failure, setFailure] = useState<{ code: string; message: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+  /** Bumped by the retry button so a failed cwd resolution runs again. */
+  const [cwdAttempt, setCwdAttempt] = useState(0)
+  const requestRef = useRef<AbortController | null>(null)
+  const runRef = useRef(0)
+
+  // The session cwd is the one input the host cannot guess: prefer the scope,
+  // otherwise ask the sidebar route that owns the authoritative answer.
+  useEffect(() => {
+    if (scope.cwd !== undefined && scope.cwd !== '') {
+      setCwd(scope.cwd)
+      setCwdFailed(false)
+      return
+    }
+    const controller = new AbortController()
+    let live = true
+    void resolveSessionCwd(scope, controller.signal)
+      .then((resolved) => {
+        if (!live) return
+        if (resolved === undefined) setCwdFailed(true)
+        else {
+          setCwd(resolved)
+          setCwdFailed(false)
+        }
+      })
+      .catch((error: unknown) => {
+        if (!live || isAbort(error)) return
+        setCwdFailed(true)
+      })
+    return () => {
+      live = false
+      controller.abort()
+    }
+  }, [scope.sessionId, scope.cwd, cwdAttempt])
+
+  const refresh = useCallback(() => {
+    if (cwd === undefined) return
+    requestRef.current?.abort()
+    const controller = new AbortController()
+    requestRef.current = controller
+    const run = runRef.current + 1
+    runRef.current = run
+    setBusy(true)
+    void fetchHunkState(cwd, controller.signal)
+      .then((next) => {
+        if (runRef.current !== run) return
+        setData(next)
+        setFailure(null)
+      })
+      .catch((error: unknown) => {
+        if (runRef.current !== run || isAbort(error)) return
+        setFailure({
+          code: error instanceof HunkClientError ? error.code : 'unknown',
+          message: messageOf(error),
+        })
+      })
+      .finally(() => {
+        if (runRef.current === run) setBusy(false)
+      })
+  }, [cwd])
+
+  // Read on every appearance: `visible` is false while the panel is collapsed
+  // or another tab is active, and a review is worth re-reading when the user
+  // comes back to it.
+  useEffect(() => {
+    if (!visible || cwd === undefined) return
+    refresh()
+  }, [visible, cwd, refresh])
+
+  // Abort whatever is in flight when the tab body unmounts.
+  useEffect(() => () => { requestRef.current?.abort() }, [])
+
+  /** One retry action for both failure kinds: re-resolve cwd, then re-read. */
+  const retry = useCallback(() => {
+    if (cwd === undefined) {
+      setCwdFailed(false)
+      setCwdAttempt(attempt => attempt + 1)
+      return
+    }
+    refresh()
+  }, [cwd, refresh])
+
+  const review = data?.review ?? null
+  const fetchedAt = formatTime(data?.fetchedAt)
+  return (
+    <div style={styles.root as CSSProperties} data-dsh-hunk-tab="">
+      <div style={styles.header as CSSProperties}>
+        <span style={styles.headerTitle as CSSProperties}>{t('view.title')}</span>
+        <span style={styles.spacer as CSSProperties} />
+        {fetchedAt !== undefined && (
+          <span style={styles.muted as CSSProperties}>{t('updated.at', { time: fetchedAt })}</span>
+        )}
+        <Button
+          label={busy ? t('action.refreshing') : t('action.refresh')}
+          disabled={busy || cwd === undefined}
+          onClick={retry}
+        />
+      </div>
+      <div style={styles.body as CSSProperties}>
+        {cwdFailed && <FailureBlock t={t} failure={{ code: 'cwd', message: t('cwd.missing') }} onRetry={retry} />}
+        {!cwdFailed && failure !== null && (
+          <FailureBlock t={t} failure={failure} onRetry={retry} />
+        )}
+        {!cwdFailed && failure === null && data === null && (
+          <p style={styles.muted as CSSProperties}>{t('loading')}</p>
+        )}
+        {!cwdFailed && data !== null && review === null && <EmptyState t={t} data={data} />}
+        {!cwdFailed && data !== null && review !== null && (
+          <>
+            <SessionStrip t={t} data={data} review={review} session={data.matched ?? undefined} />
+            {review.files.length === 0 && (
+              <p style={styles.muted as CSSProperties}>{t('empty.files')}</p>
+            )}
+            {review.files.map(file => (
+              <FileCard
+                key={file.id}
+                t={t}
+                file={file}
+                notes={review.reviewNotes}
+                focusedPath={review.selectedFilePath}
+                focusedHunk={review.selectedHunkIndex}
+              />
+            ))}
+            {review.files.length > 0 && review.reviewNotes.length === 0 && (
+              <p style={styles.muted as CSSProperties}>{t('note.empty')}</p>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}

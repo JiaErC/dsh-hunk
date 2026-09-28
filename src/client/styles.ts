@@ -1,0 +1,195 @@
+/**
+ * Inline styles for the tab body.
+ *
+ * Inline (not a CSS module) on purpose: this bundle ships no stylesheet, so
+ * there is nothing to inject or clean up on unload. Every color and font comes
+ * from a DSH theme token, so the tab follows the active skin, light/dark
+ * switching, and any future token rename (a missing token degrades the
+ * appearance, never the rendering).
+ */
+import type { CSSProperties } from 'react'
+
+/** Theme tokens this view consumes. */
+export const token = {
+  /** Panel surface — the same token every DSH sidebar page paints on. */
+  surface: 'var(--dsw-alias-bg-layer-1)',
+  /** Raised blocks inside the panel (cards, header strips). */
+  raised: 'var(--dsw-alias-bg-layer-2)',
+  /** Sunken blocks (command lines, hunk headers). */
+  sunken: 'var(--dsw-alias-bg-base)',
+  border: 'var(--dsw-alias-border-l2)',
+  hairline: 'var(--dsw-alias-hairline)',
+  text: 'var(--dsw-alias-label-primary)',
+  textSecondary: 'var(--dsw-alias-label-secondary)',
+  textTertiary: 'var(--dsw-alias-label-tertiary)',
+  accent: 'var(--dsw-alias-accent)',
+  accentSoft: 'var(--dsw-alias-accent-soft)',
+  danger: 'var(--dsw-alias-danger)',
+  success: 'var(--dsw-alias-state-success-primary)',
+  hover: 'var(--dsw-alias-interactive-bg-hover)',
+  mono: 'var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+} as const
+
+const fontFamily = 'inherit'
+
+/** Every style object the tab uses. */
+export const styles = {
+  root: {
+    display: 'flex',
+    flexDirection: 'column',
+    height: '100%',
+    minHeight: 0,
+    background: token.surface,
+    color: token.text,
+    fontSize: 12.5,
+    lineHeight: 1.5,
+  },
+  header: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+    padding: '8px 10px',
+    borderBottom: `1px solid ${token.hairline}`,
+  },
+  headerTitle: { fontWeight: 600 },
+  spacer: { flex: 1, minWidth: 0 },
+  body: { flex: 1, minHeight: 0, overflow: 'auto', padding: '10px 10px 18px' },
+  muted: { color: token.textTertiary },
+  secondary: { color: token.textSecondary },
+  button: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '3px 9px',
+    borderRadius: 6,
+    border: `1px solid ${token.border}`,
+    background: token.raised,
+    color: token.text,
+    cursor: 'pointer',
+    fontSize: 12,
+    fontFamily,
+    whiteSpace: 'nowrap',
+  },
+  buttonBusy: { opacity: 0.6, cursor: 'default' },
+  strip: {
+    padding: '8px 10px',
+    marginBottom: 10,
+    border: `1px solid ${token.border}`,
+    borderRadius: 8,
+    background: token.raised,
+  },
+  stripTitle: { fontWeight: 600, marginBottom: 2, wordBreak: 'break-word' },
+  stripMeta: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
+    color: token.textTertiary,
+    fontSize: 11.5,
+  },
+  card: {
+    marginBottom: 8,
+    border: `1px solid ${token.border}`,
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  cardHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    width: '100%',
+    padding: '7px 9px',
+    border: 'none',
+    background: token.raised,
+    color: token.text,
+    cursor: 'pointer',
+    fontFamily,
+    fontSize: 12.5,
+    textAlign: 'left',
+  },
+  caret: { flexShrink: 0, color: token.textTertiary, fontSize: 10 },
+  filePath: { flex: 1, minWidth: 0, fontFamily: token.mono, wordBreak: 'break-all' },
+  previousPath: { color: token.textTertiary, fontFamily: token.mono, fontSize: 11.5, wordBreak: 'break-all' },
+  counts: { flexShrink: 0, display: 'inline-flex', gap: 5, fontSize: 11.5 },
+  additions: { color: token.success },
+  deletions: { color: token.danger },
+  badge: {
+    flexShrink: 0,
+    padding: '0 5px',
+    borderRadius: 999,
+    border: `1px solid ${token.border}`,
+    color: token.textSecondary,
+    fontSize: 10.5,
+    lineHeight: '15px',
+  },
+  badgeFocus: {
+    flexShrink: 0,
+    padding: '0 5px',
+    borderRadius: 999,
+    border: `1px solid ${token.accent}`,
+    background: token.accentSoft,
+    color: token.text,
+    fontSize: 10.5,
+    lineHeight: '15px',
+  },
+  hunk: { padding: '7px 9px', borderTop: `1px solid ${token.hairline}` },
+  hunkHead: { display: 'flex', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' },
+  hunkIndex: { color: token.textTertiary, fontSize: 11, flexShrink: 0 },
+  hunkHeader: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: token.mono,
+    fontSize: 11.5,
+    color: token.textSecondary,
+    background: token.sunken,
+    borderRadius: 4,
+    padding: '1px 5px',
+    wordBreak: 'break-all',
+  },
+  note: {
+    marginTop: 6,
+    paddingLeft: 8,
+    borderLeft: `2px solid ${token.accent}`,
+  },
+  noteMeta: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
+    color: token.textTertiary,
+    fontSize: 11,
+    marginBottom: 2,
+  },
+  noteTitle: { color: token.textSecondary, fontWeight: 600 },
+  noteBody: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+  codeRow: { display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 4 },
+  codeRowCode: {
+    flex: 1,
+    minWidth: 0,
+    margin: 0,
+    padding: '6px 8px',
+    border: `1px solid ${token.border}`,
+    borderRadius: 6,
+    background: token.sunken,
+    fontFamily: token.mono,
+    fontSize: 11.5,
+    wordBreak: 'break-all',
+  },
+  empty: {
+    padding: '10px 12px',
+    border: `1px dashed ${token.border}`,
+    borderRadius: 8,
+    background: token.raised,
+  },
+  emptyTitle: { fontWeight: 600, marginBottom: 6 },
+  list: { margin: '4px 0 0', paddingLeft: 18, color: token.textSecondary, fontFamily: token.mono, fontSize: 11.5 },
+  failure: {
+    padding: '9px 11px',
+    border: `1px solid ${token.danger}`,
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  failureTitle: { fontWeight: 600, marginBottom: 4 },
+  failureMessage: { color: token.textSecondary, wordBreak: 'break-word', whiteSpace: 'pre-wrap' },
+} satisfies Record<string, CSSProperties>

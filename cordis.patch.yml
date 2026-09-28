@@ -1,0 +1,12 @@
+# dsh-hunk 作为 bundle 时的挂载层：插入一行 Loader 条目。
+#
+# profile 把本包列进 `dsh.profile.bundles` 时这一层自动生效；
+# 手工挂载（profile 的 cordis.patch.yml）时把下面三行抄过去即可：
+#
+#   - insert:
+#       - id: dsh-hunk
+#         name: dsh-hunk
+#
+- insert:
+    - id: dsh-hunk
+      name: dsh-hunk
