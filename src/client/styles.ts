@@ -152,6 +152,7 @@ export const styles = {
   note: {
     marginTop: 6,
     paddingLeft: 8,
+    border: `1px solid ${token.border}`,
     borderLeft: `2px solid ${token.accent}`,
   },
   noteMeta: {
