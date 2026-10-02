@@ -256,8 +256,8 @@ function HunkDiff(props: {
 
 /**
  * One hunk: a collapsible row (index, section header, ranges, copy) over its
- * code. The row and its notes are always visible; only the code follows the
- * disclosure, so collapsing a file leaves its review readable.
+ * code. The row and its notes are always on screen — only the code follows the
+ * disclosure, so collapsing a hunk never takes a note away.
  */
 function HunkView(props: {
   t: Translate
@@ -267,13 +267,9 @@ function HunkView(props: {
   focused: boolean
   patchState: PatchState
   patchCapable: boolean
-  /** Set by a collapsed file row: the hunk's own state is ignored, code hidden. */
-  forceCollapsed?: boolean
   ensurePatch: () => Promise<Record<string, string>>
 }): ReactNode {
-  const {
-    t, filePath, hunk, notes, focused, patchState, patchCapable, forceCollapsed, ensurePatch,
-  } = props
+  const { t, filePath, hunk, notes, focused, patchState, patchCapable, ensurePatch } = props
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const ranges = hunkRanges(hunk, t)
@@ -286,10 +282,10 @@ function HunkView(props: {
     () => (rows === undefined ? undefined : placeNotes(rows, notes)),
     [rows, notes],
   )
-  // The code follows the two disclosures (this hunk's own, and its file's);
-  // everything else about the hunk — its row and its notes — is always on
-  // screen, so collapsing a file leaves the review itself readable.
-  const codeShown = open && forceCollapsed !== true
+  // The hunk's disclosure owns its code, and nothing else: while the code is
+  // hidden every note drops below the hunk row, so collapsing never costs a
+  // reader their comments.
+  const codeShown = open
   const { inline, below } = notesForDisplay({ codeShown, placed, notes })
   const notice = !patchCapable || patchState.code === UNSUPPORTED
     // "This build cannot" is a different fact from "that read failed", and only
@@ -398,35 +394,37 @@ function FileCard(props: {
         {isFocused && <span style={styles.badgeFocus as CSSProperties}>{t('summary.focus')}</span>}
       </button>
       {/*
-        The hunk rows — and their notes — stay listed while the file is
-        collapsed; only the code follows the file's disclosure. So a collapsed
-        file still reads as a review, and expanding it puts the code (with the
-        notes on their own lines) back in place.
+        The file's disclosure owns its content: collapsed, the hunks — their
+        rows, their code and their notes — are gone, and the file row is the
+        whole entry. The hunk's own disclosure only owns the code (a collapsed
+        hunk keeps its notes below its row), so the two levels stay distinct:
+        expand the file to see what changed, expand a hunk to see the lines.
       */}
-      <div>
-        {file.hunks.map((hunk) => (
-          <HunkView
-            key={hunk.index}
-            t={t}
-            filePath={file.path}
-            hunk={hunk}
-            notes={grouped.byHunk.get(hunk.index) ?? []}
-            focused={isFocused && focusedHunk === hunk.index}
-            patchState={patchState}
-            patchCapable={patchCapable}
-            forceCollapsed={!open}
-            ensurePatch={ensurePatch}
-          />
-        ))}
-        {grouped.loose.length > 0 && (
-          <div style={styles.hunk as CSSProperties}>
-            <div style={styles.hunkHead as CSSProperties}>
-              <span style={styles.badge as CSSProperties}>{t('note.fileLevel')}</span>
+      {open && (
+        <div>
+          {file.hunks.map((hunk) => (
+            <HunkView
+              key={hunk.index}
+              t={t}
+              filePath={file.path}
+              hunk={hunk}
+              notes={grouped.byHunk.get(hunk.index) ?? []}
+              focused={isFocused && focusedHunk === hunk.index}
+              patchState={patchState}
+              patchCapable={patchCapable}
+              ensurePatch={ensurePatch}
+            />
+          ))}
+          {grouped.loose.length > 0 && (
+            <div style={styles.hunk as CSSProperties}>
+              <div style={styles.hunkHead as CSSProperties}>
+                <span style={styles.badge as CSSProperties}>{t('note.fileLevel')}</span>
+              </div>
+              {grouped.loose.map(note => <NoteView key={note.noteId} t={t} note={note} />)}
             </div>
-            {grouped.loose.map(note => <NoteView key={note.noteId} t={t} note={note} />)}
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </section>
   )
 }
