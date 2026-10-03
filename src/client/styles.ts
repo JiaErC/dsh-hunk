@@ -27,6 +27,20 @@ export const token = {
   danger: 'var(--dsw-alias-danger)',
   success: 'var(--dsw-alias-state-success-primary)',
   hover: 'var(--dsw-alias-interactive-bg-hover)',
+  /**
+   * The surface ladder, in one place.
+   *
+   * `bg-layer-2`/`-3` are the *same colour* as `bg-layer-1` in the light theme
+   * (all three resolve to `neutral-bluish-00`; only a skin with explicit layer
+   * values makes them differ), so a grey surface has to be a translucent wash:
+   * `#2631480f` over a light panel, `#ffffff14` over a dark one. Three steps of
+   * that wash are what this view's hierarchy is built from.
+   */
+  tint: 'var(--dsw-alias-interactive-bg-hover)',
+  /** One step stronger: an open hunk row, and the hover state of any row. */
+  tintStrong: 'var(--dsw-alias-interactive-bg-active)',
+  /** Two steps stronger: the file row, so a group header reads above its hunks. */
+  tintHeader: 'var(--dsw-alias-interactive-bg-hover-accent)',
   mono: 'var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
 } as const
 
@@ -104,7 +118,9 @@ export const styles = {
     padding: '7px 9px',
     border: 'none',
     borderRadius: 6,
-    background: token.raised,
+    // The group header sits one step above its hunks (see the ladder on
+    // `token.tint`): darker grey, same rounding.
+    background: token.tintHeader,
     color: token.text,
     cursor: 'pointer',
     fontFamily,
@@ -206,13 +222,17 @@ export const styles = {
     padding: '3px 6px',
     border: 'none',
     borderRadius: 6,
-    background: token.raised,
+    // A change row is a surface, not blank space: the tint reads as light grey
+    // on a light panel and as a lift on a dark one (see `token.tint`).
+    background: token.tint,
     color: token.text,
     cursor: 'pointer',
     fontFamily,
     fontSize: 12.5,
     textAlign: 'left',
   },
+  /** The open hunk's row, and the hover state of any hunk row. */
+  hunkRowActive: { background: token.tintStrong },
   hunkHead: { display: 'flex', alignItems: 'center', gap: 4, marginTop: 3 },
   iconButton: {
     flexShrink: 0,

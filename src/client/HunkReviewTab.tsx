@@ -299,6 +299,8 @@ function HunkView(props: {
   const { t, filePath, hunk, notes, focused, patchState, patchCapable, ensurePatch } = props
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState(false)
+  /** Hover state for the change row (its own, so the tab body does not re-render). */
+  const [rowHover, setRowHover] = useState(false)
   const ranges = hunkRanges(hunk, t)
   const patch = useMemo(
     () => pickPatchHunk(patchState.map[filePath], hunk),
@@ -357,9 +359,14 @@ function HunkView(props: {
       <div style={styles.hunkHead as CSSProperties}>
         <button
           type="button"
-          style={styles.hunkRow as CSSProperties}
+          style={{
+            ...styles.hunkRow,
+            ...(codeShown || rowHover ? styles.hunkRowActive : {}),
+          } as CSSProperties}
           title={codeShown ? t('hunk.collapse') : t('hunk.expand')}
           aria-expanded={codeShown}
+          onMouseEnter={() => { setRowHover(true) }}
+          onMouseLeave={() => { setRowHover(false) }}
           onClick={toggle}
         >
           <span style={styles.caret as CSSProperties}>{codeShown ? '▼' : '▶'}</span>

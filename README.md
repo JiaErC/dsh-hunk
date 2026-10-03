@@ -73,6 +73,10 @@ ctx.betterSidebar.registerTab(              GET /dsh-hunk/state?cwd=<会话 cwd>
   也留在下方，不会因为折叠状态而消失。
 - **两级的职责分清楚**：文件行 = 这份文件的**变动内容**看不看（收起时代码与 hunk 行
   收起，注释留下），hunk 行 = 这段代码看不看（收起只收代码，注释留着）。
+- **灰阶靠半透明叠色，不靠 `bg-layer-*`**：浅色主题里 `--dsw-alias-bg-layer-1/2/3`
+  是同一个颜色（都解析成 `neutral-bluish-00`，只有皮肤显式覆盖才会不同），所以用
+  `interactive-bg-hover / -active / -hover-accent` 搭三级灰阶：hunk 行最浅、展开中或
+  悬停时加深一档、文件行最深的那个圆角矩形（组头压在它的 hunk 之上）。浅深主题自动跟随。
 
 
 
