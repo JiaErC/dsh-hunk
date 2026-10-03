@@ -323,4 +323,14 @@ export const styles = {
     borderLeft: `2px solid ${token.accent}`,
     background: token.raised,
   },
+  /** A collapsed file's review: the notes stay on screen, the code does not. */
+  collapsedReview: {
+    padding: '2px 9px 6px',
+    borderTop: `1px solid ${token.hairline}`,
+  },
+  collapsedReviewTitle: {
+    color: token.textTertiary,
+    fontSize: 11,
+    margin: '2px 0 4px',
+  },
 } satisfies Record<string, CSSProperties>

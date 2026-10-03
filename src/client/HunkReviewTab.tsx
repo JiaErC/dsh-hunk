@@ -19,7 +19,7 @@ import type {
   HunkSessionSummary,
   HunkStatePayload,
 } from '../shared/wire'
-import { groupNotes, pathKey } from '../shared/notes'
+import { fileNotes, groupNotes, pathKey } from '../shared/notes'
 import { languageForPath, type HighlightToken, type HighlightedLine } from '../shared/languages'
 import { tokenizeSides, type SideTokens } from './highlight'
 import {
@@ -407,6 +407,9 @@ function FileCard(props: {
   const { t, file, notes, focusedPath, focusedHunk, patchState, patchCapable, ensurePatch } = props
   const [open, setOpen] = useState(true)
   const grouped = useMemo(() => groupNotes(file, notes), [file, notes])
+  // Collapsed, this file's review is what stays: the code goes away, the notes
+  // do not. `fileNotes` is the reading order for that list.
+  const review = useMemo(() => fileNotes(file, grouped), [file, grouped])
   const isFocused = focusedPath !== undefined && pathKey(focusedPath) === pathKey(file.path)
   return (
     <section style={styles.card as CSSProperties}>
@@ -429,37 +432,46 @@ function FileCard(props: {
         {isFocused && <span style={styles.badgeFocus as CSSProperties}>{t('summary.focus')}</span>}
       </button>
       {/*
-        The file's disclosure owns its content: collapsed, the hunks — their
-        rows, their code and their notes — are gone, and the file row is the
-        whole entry. The hunk's own disclosure only owns the code (a collapsed
-        hunk keeps its notes below its row), so the two levels stay distinct:
-        expand the file to see what changed, expand a hunk to see the lines.
+        Expanded: the hunks, their rows and their code (each hunk's own
+        disclosure controls the code alone).
+
+        Collapsed: the code goes away — that is what collapsing means — but the
+        review written about this file stays, listed under its row. Losing the
+        comments on collapse would be the worst outcome for a reviewer, which is
+        why the collapsed branch is notes-only rather than nothing.
       */}
-      {open && (
-        <div>
-          {file.hunks.map((hunk) => (
-            <HunkView
-              key={hunk.index}
-              t={t}
-              filePath={file.path}
-              hunk={hunk}
-              notes={grouped.byHunk.get(hunk.index) ?? []}
-              focused={isFocused && focusedHunk === hunk.index}
-              patchState={patchState}
-              patchCapable={patchCapable}
-              ensurePatch={ensurePatch}
-            />
-          ))}
-          {grouped.loose.length > 0 && (
-            <div style={styles.hunk as CSSProperties}>
-              <div style={styles.hunkHead as CSSProperties}>
-                <span style={styles.badge as CSSProperties}>{t('note.fileLevel')}</span>
-              </div>
-              {grouped.loose.map(note => <NoteView key={note.noteId} t={t} note={note} />)}
+      {open
+        ? (
+            <div>
+              {file.hunks.map((hunk) => (
+                <HunkView
+                  key={hunk.index}
+                  t={t}
+                  filePath={file.path}
+                  hunk={hunk}
+                  notes={grouped.byHunk.get(hunk.index) ?? []}
+                  focused={isFocused && focusedHunk === hunk.index}
+                  patchState={patchState}
+                  patchCapable={patchCapable}
+                  ensurePatch={ensurePatch}
+                />
+              ))}
+              {grouped.loose.length > 0 && (
+                <div style={styles.hunk as CSSProperties}>
+                  <div style={styles.hunkHead as CSSProperties}>
+                    <span style={styles.badge as CSSProperties}>{t('note.fileLevel')}</span>
+                  </div>
+                  {grouped.loose.map(note => <NoteView key={note.noteId} t={t} note={note} />)}
+                </div>
+              )}
+            </div>
+          )
+        : review.length > 0 && (
+            <div style={styles.collapsedReview as CSSProperties}>
+              <div style={styles.collapsedReviewTitle as CSSProperties}>{t('note.fileReview')}</div>
+              {review.map(note => <NoteView key={note.noteId} t={t} note={note} />)}
             </div>
           )}
-        </div>
-      )}
     </section>
   )
 }

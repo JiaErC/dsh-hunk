@@ -67,3 +67,23 @@ export function groupNotes(file: HunkReviewFile, notes: readonly HunkReviewNote[
   }
   return { byHunk, loose }
 }
+
+/**
+ * Every note of one file, in reading order: by hunk, then the file-level rest.
+ *
+ * This is what a collapsed file still shows. Collapsing a file hides its code —
+ * that is the point of collapsing it — but the review written about that file is
+ * the reason someone is looking, so it stays listed under the file row.
+ * @param file - the reviewed file.
+ * @param grouped - the file's notes, already bucketed by {@link groupNotes}.
+ * @returns the file's notes, hunk by hunk, then the unanchored ones.
+ */
+export function fileNotes(file: HunkReviewFile, grouped: FileNotes): HunkReviewNote[] {
+  const ordered: HunkReviewNote[] = []
+  for (const hunk of file.hunks) {
+    const bucket = grouped.byHunk.get(hunk.index)
+    if (bucket !== undefined) ordered.push(...bucket)
+  }
+  ordered.push(...grouped.loose)
+  return ordered
+}

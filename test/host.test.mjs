@@ -21,6 +21,7 @@ import {
   clearPatchCache,
   collectHunkPatches,
   collectHunkState,
+  fileNotes,
   groupNotes,
   hunkLineNumbers,
   hunkOfNote,
@@ -366,6 +367,17 @@ test('placeNotes hangs a note under the last line of the range it reviews', () =
   ])
   assert.deepEqual(mixed.byRow.get(2).map(item => item.noteId), ['n4', 'n5'])
   assert.deepEqual(mixed.unplaced.map(item => item.noteId), ['n6', 'n7'])
+})
+
+test('fileNotes lists a file’s notes hunk by hunk, then the unanchored ones', () => {
+  const review = readReview(REVIEW_PAYLOAD)
+  const fileA = review.files[0]
+  const grouped = groupNotes(fileA, review.reviewNotes)
+  // agent:1 → hunk 0, user:2 → hunk 1 (by range), user:3 → loose.
+  assert.deepEqual(fileNotes(fileA, grouped).map(note => note.noteId), ['agent:1', 'user:2', 'user:3'])
+  // A file with no notes yields an empty list — the collapsed branch then draws
+  // nothing extra under the file row.
+  assert.deepEqual(fileNotes(review.files[1], groupNotes(review.files[1], [])), [])
 })
 
 test('parsePatchesPayload refuses a structural payload and normalizes a patch one', () => {
