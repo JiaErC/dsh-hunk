@@ -4,8 +4,10 @@
  *
  * What this proves: the bundle registers under the package name, its factory
  * materializes with only the baseline module-table entries (`react`,
- * `react/jsx-runtime`), and `apply` registers one better-sidebar tab with the
- * requested id, order and single-instance policy — plus the locale path.
+ * `react/jsx-runtime`), and `apply` registers the tab TYPE (id, kind,
+ * `extension` priority, guide entry) plus its BODY seat — on DSH's own right
+ * Sidebar services, with no third-party sidebar plugin involved — and the
+ * locale path.
  *
  * What it cannot prove: how the tab looks in the browser. No renderer runs
  * here, so visual verification stays a manual step (open the tab and refresh).
@@ -59,20 +61,47 @@ function localeStub(active) {
   }
 }
 
-/** A ctx-shaped object capturing the registered tab descriptor. */
+/**
+ * A ctx-shaped object standing in for DSH's own right-Sidebar services.
+ *
+ * The plugin talks to them through `ctx.get` with structural types, so the stub
+ * only has to be faithful about the two calls it makes: the tab-type registry
+ * and the keyed body seat.
+ */
 function fakeCtx(locale) {
   const tabs = []
+  const bodies = []
+  const slotInjections = []
+  const slots = {
+    register(options, component) {
+      bodies.push({ options, component })
+      return () => {}
+    },
+    inject(ownerKey, callback) {
+      slotInjections.push(ownerKey)
+      const disposer = callback()
+      return () => {
+        if (typeof disposer === 'function') disposer()
+      }
+    },
+  }
+  const services = {
+    locale,
+    slots,
+    sidebarRightTabs: {
+      register(definition) {
+        tabs.push(definition)
+        return () => {}
+      },
+    },
+  }
   return {
     tabs,
+    bodies,
+    slotInjections,
     ctx: {
-      betterSidebar: {
-        registerTab(descriptor) {
-          tabs.push(descriptor)
-          return () => {}
-        },
-      },
       get(name) {
-        return name === 'locale' ? locale : undefined
+        return services[name]
       },
       effect(callback) {
         const disposer = callback()
@@ -114,13 +143,15 @@ async function loadPlugin() {
 test('the bundle registers under the package name and exposes a cordis plugin', async () => {
   const plugin = await loadPlugin()
   assert.equal(typeof plugin.apply, 'function')
-  assert.deepEqual(plugin.inject, ['betterSidebar'])
+  // The tab-type registry and the slot registry: DSH's own right Sidebar, with
+  // no third-party sidebar plugin in the dependency list.
+  assert.deepEqual(plugin.inject, ['sidebarRightTabs', 'slots'])
 })
 
-test('apply registers the review tab at the requested id, order and policy', async () => {
+test('apply registers the review tab type, its guide entry, and its body seat', async () => {
   const plugin = await loadPlugin()
   const locale = localeStub('en')
-  const { ctx, tabs } = fakeCtx(locale)
+  const { ctx, tabs, bodies, slotInjections } = fakeCtx(locale)
   plugin.apply(ctx)
 
   // The dictionaries are registered for both shipped languages.
@@ -129,26 +160,48 @@ test('apply registers the review tab at the requested id, order and policy', asy
     ['dshHunk:en', 'dshHunk:zh'],
   )
 
+  // Stage one: the tab TYPE.
   assert.equal(tabs.length, 1)
   const tab = tabs[0]
   assert.equal(tab.id, 'dsh-hunk:review')
-  assert.equal(tab.order, 40)
-  assert.equal(tab.single, true)
-  assert.equal(typeof tab.component, 'function')
-  assert.equal(typeof tab.title(), 'string')
-  assert.equal(tab.title(), 'Hunk review')
-  assert.equal(tab.description(), 'Live Hunk session for this repo: files, hunks and notes')
+  assert.equal(tab.kind, 'dsh-hunk:review')
+  assert.equal(tab.priority, 'extension')
+  assert.equal(tab.title('/any/address'), 'Hunk review')
 
-  // The icon must inherit the skin rather than carry color literals.
-  assert.equal(tab.icon.props.stroke, 'currentColor')
-  assert.equal(tab.icon.props.viewBox, '0 0 16 16')
+  // It is offered on the new-tab page, in the requested order, with live copy.
+  assert.equal(tab.guide.length, 1)
+  const entry = tab.guide[0]
+  assert.equal(entry.id, 'dsh-hunk:review')
+  assert.equal(entry.order, 40)
+  assert.equal(entry.title(), 'Hunk review')
+  assert.equal(entry.description(), 'Live Hunk session for this repo: files, hunks and notes')
+  // The guide renders the glyph itself, so the entry carries a COMPONENT (the
+  // native seat calls it with its own size) — an element here would break it.
+  assert.equal(typeof entry.icon, 'function')
+  const glyph = entry.icon({ size: 16 })
+  assert.equal(glyph.props.stroke, 'currentColor')
+  assert.equal(glyph.props.viewBox, '0 0 16 16')
+  assert.equal(glyph.props.width, 16)
+  assert.equal(entry.icon({}).props.width, 14)
+
+  // Stage two: the BODY, under the type's id, inside the seat the sidebar declares.
+  assert.deepEqual(slotInjections, ['sidebar.right.pane.tab'])
+  assert.equal(bodies.length, 1)
+  assert.equal(bodies[0].options.name, 'sidebar.right.pane.tab')
+  assert.equal(bodies[0].options.key, 'dsh-hunk:review')
+  assert.equal(typeof bodies[0].component, 'function')
+  // The body registration injects the context and the session it renders for.
+  assert.deepEqual(Object.keys(bodies[0].options.inject('session-1')).sort(), ['ctx', 'sessionId'])
+  assert.equal(bodies[0].options.inject('session-1').sessionId, 'session-1')
+  assert.equal(bodies[0].options.inject('session-1').ctx, ctx)
 })
 
 test('the tab title follows the active locale', async () => {
   const plugin = await loadPlugin()
   const { ctx, tabs } = fakeCtx(localeStub('zh'))
   plugin.apply(ctx)
-  assert.equal(tabs[0].title(), 'Hunk 评审')
+  assert.equal(tabs[0].title(''), 'Hunk 评审')
+  assert.equal(tabs[0].guide[0].title(), 'Hunk 评审')
 })
 
 test('apply still works without a locale service', async () => {
@@ -157,6 +210,22 @@ test('apply still works without a locale service', async () => {
   plugin.apply(ctx)
   assert.equal(tabs.length, 1)
   assert.equal(tabs[0].id, 'dsh-hunk:review')
+})
+
+test('a missing sidebar service is reported instead of failing silently', async () => {
+  const plugin = await loadPlugin()
+  // No registry: the plugin must say so (a cordis swallow would leave the
+  // sidebar without a tab and without a symptom).
+  const errors = []
+  const original = console.error
+  console.error = (...args) => { errors.push(args.join(' ')) }
+  try {
+    plugin.apply({ get: () => undefined, effect: () => () => {} })
+  } finally {
+    console.error = original
+  }
+  assert.equal(errors.length, 1)
+  assert.match(errors[0], /sidebarRightTabs is missing/)
 })
 
 /*

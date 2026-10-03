@@ -2,7 +2,7 @@
   "name": "dsh-hunk",
   "version": "0.3.0",
   "private": true,
-  "description": "在 DSH 右侧栏为 dsh-better-sidebar 增加一个「Hunk 评审」tab：把当前会话 cwd 下 live Hunk 会话的文件 / hunk / 注释列出来（只读）。",
+  "description": "在 DSH 自带的右侧栏里增加一个「Hunk 评审」tab：把当前会话 cwd 下 live Hunk 会话的文件 / hunk / 注释列出来（只读）。",
   "repository": {
     "type": "git",
     "url": "git@gitee.com:JiaErC/dsh-hunk.git"
@@ -47,20 +47,13 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.4",
-    "dsh-better-sidebar": "^0.24.1"
-  },
-  "peerDependenciesMeta": {
-    "dsh-better-sidebar": {
-      "optional": true
-    }
+    "@deepseek-ai/cordis": "^4.0.4"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.4",
     "@shikijs/langs": "^4.5.0",
     "@types/node": "^22.15.0",
     "@types/react": "^18.3.12",
-    "dsh-better-sidebar": "^0.24.1",
     "esbuild": "^0.25.0",
     "shiki": "^4.5.0",
     "typescript": "^5.7.0"

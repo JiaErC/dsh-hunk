@@ -10,7 +10,7 @@
  * nothing here writes to the review.
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import type { TabComponentProps } from 'dsh-better-sidebar/client/service'
+import type { Context } from '@deepseek-ai/cordis'
 import type {
   HunkReviewFile,
   HunkReviewHunk,
@@ -31,7 +31,8 @@ import {
   type SplitCell,
   type SplitRow,
 } from '../shared/patch'
-import { HunkClientError, fetchHunkPatches, fetchHunkState, isAbort, messageOf, resolveSessionCwd } from './api'
+import { HunkClientError, fetchHunkPatches, fetchHunkState, isAbort, messageOf } from './api'
+import { useSessionCwd } from './session-cwd'
 import { useTranslate, type Translate } from './i18n'
 import { styles, token } from './styles'
 
@@ -564,56 +565,58 @@ function FailureBlock(props: {
   )
 }
 
+/** How long a missing cwd is waited on before it is reported as a failure. */
+const CWD_GRACE_MS = 2000
+
+/**
+ * The tab body's props: the framework's per-tab reader plus what this plugin
+ * injects through the body registration (`ctx`, `sessionId`). Typed
+ * structurally — the real types live in a Harness Client package this plugin
+ * must not require.
+ */
+export interface HunkTabProps {
+  /** Client context (locale lives here). */
+  readonly ctx: Context
+  /** The session this tab belongs to. */
+  readonly sessionId: string
+  /** Live tab record: visibility, navigation, actions. */
+  readonly useTabInfo: () => { readonly tab: { readonly visible: boolean } }
+}
+
 /**
  * The tab body.
- * @param props - better-sidebar's tab component props.
+ * @param props - the native tab body props (see {@link HunkTabProps}).
  * @returns the rendered view.
  */
-export function HunkReviewTab({ ctx, scope, visible }: TabComponentProps): ReactNode {
+export function HunkReviewTab({ ctx, sessionId, useTabInfo }: HunkTabProps): ReactNode {
   const t = useTranslate(ctx)
-  const [cwd, setCwd] = useState<string | undefined>(
-    scope.cwd !== undefined && scope.cwd !== '' ? scope.cwd : undefined,
-  )
-  const [cwdFailed, setCwdFailed] = useState(false)
+  const visible = useTabInfo().tab.visible
+  // Live from the client session list, so it needs no resolution step and no
+  // HTTP fallback: the only input the host route cannot guess.
+  const cwd = useSessionCwd(ctx, sessionId)
   const [data, setData] = useState<HunkStatePayload | null>(null)
   const [failure, setFailure] = useState<{ code: string; message: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [patchState, setPatchState] = useState<PatchState>(IDLE_PATCHES)
-  /** Bumped by the retry button so a failed cwd resolution runs again. */
-  const [cwdAttempt, setCwdAttempt] = useState(0)
+  /** True once the session list has had its grace period and still has no cwd. */
+  const [cwdTimedOut, setCwdTimedOut] = useState(false)
   const requestRef = useRef<AbortController | null>(null)
   const runRef = useRef(0)
   /** The in-flight or settled patch read, tagged with the cwd it belongs to. */
   const patchRef = useRef<{ cwd: string; promise: Promise<Record<string, string>> } | null>(null)
 
-  // The session cwd is the one input the host cannot guess: prefer the scope,
-  // otherwise ask the sidebar route that owns the authoritative answer.
+  // A missing cwd is waited on, not failed: the summary list fills in as the
+  // session loads, and the subscription above re-renders when it does. Only a
+  // list that stays empty is worth telling the user about.
   useEffect(() => {
-    if (scope.cwd !== undefined && scope.cwd !== '') {
-      setCwd(scope.cwd)
-      setCwdFailed(false)
+    if (cwd !== undefined) {
+      setCwdTimedOut(false)
       return
     }
-    const controller = new AbortController()
-    let live = true
-    void resolveSessionCwd(scope, controller.signal)
-      .then((resolved) => {
-        if (!live) return
-        if (resolved === undefined) setCwdFailed(true)
-        else {
-          setCwd(resolved)
-          setCwdFailed(false)
-        }
-      })
-      .catch((error: unknown) => {
-        if (!live || isAbort(error)) return
-        setCwdFailed(true)
-      })
-    return () => {
-      live = false
-      controller.abort()
-    }
-  }, [scope.sessionId, scope.cwd, cwdAttempt])
+    const timer = setTimeout(() => { setCwdTimedOut(true) }, CWD_GRACE_MS)
+    return () => { clearTimeout(timer) }
+  }, [cwd])
+  const cwdFailed = cwd === undefined && cwdTimedOut
 
   /**
    * Read the diff text once per cwd, on demand: expanding a hunk or copying one
@@ -693,11 +696,11 @@ export function HunkReviewTab({ ctx, scope, visible }: TabComponentProps): React
   // Abort whatever is in flight when the tab body unmounts.
   useEffect(() => () => { requestRef.current?.abort() }, [])
 
-  /** One retry action for both failure kinds: re-resolve cwd, then re-read. */
+  /** One retry action for both failure kinds: wait for cwd again, or re-read. */
   const retry = useCallback(() => {
     if (cwd === undefined) {
-      setCwdFailed(false)
-      setCwdAttempt(attempt => attempt + 1)
+      // Nothing to ask: the list is the authority, so start the grace period over.
+      setCwdTimedOut(false)
       return
     }
     refresh()

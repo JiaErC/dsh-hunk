@@ -63,7 +63,11 @@ Invoke-WebRequest -Headers @{ Host = '127.0.0.1:3080' } `
 - 没自动换：`Ctrl+Shift+R` 硬刷新（一定生效）。
 - 想确认换了：DevTools → Network 里找 `/plugins/dsh-hunk/client.js?rev=...`，`rev` 变了就是新的。
 - 插件加载/激活失败：**设置 → 插件** 里会显示导入错误，能直接重试（不用等下次构建）。
-- 侧栏 `+` 菜单里没有「Hunk 评审」：先确认 `dsh-better-sidebar` 是启用的——client 半 `export const inject = ['betterSidebar']`，better-sidebar 不在时这个插件是被 Cordis 停住的无害空操作。
+- 右侧栏"新建标签页"列表里没有「Hunk 评审」：client 半 `export const inject =
+  ['sidebarRightTabs', 'slots']`——两个服务都在 DSH 自带右侧栏里，缺任何一个插件都会被
+  Cordis 停住（控制台另有一条 `[dsh-hunk] … is missing` 的说明）。另外 guide 条目是
+  **tab 类型注册**的产物：类型注册失败（id 撞车、guide 条目 id 重复）时它不会出现，
+  看「设置 → 插件」的报错。
 
 ---
 
@@ -97,7 +101,8 @@ Invoke-WebRequest -Headers @{ Host = '127.0.0.1:3080' } `
 
 | 症状 | 排查 |
 |---|---|
-| 侧栏 `+` 里没有「Hunk 评审」 | better-sidebar 未启用；或 `lib/client.js` 没构建；看「设置 → 插件」的报错 |
+| 右侧栏"新建标签页"里没有「Hunk 评审」 | `lib/client.js` 没构建；或 tab 类型注册被拒（id / guide 条目 id 撞车）；看「设置 → 插件」的报错与浏览器控制台 |
+| 开了页面但一直「加载中」 | 会话 cwd 还没进 `sessions.list`（列表填好后会自动出现，无需重开）；真拿不到时 2 s 后会提示，点重试只是重新等一轮 |
 | tab 里写「没有检测到 live Hunk 会话」 | 终端没有 `hunk diff --watch`；或 **daemon 中途重启过**（先开的窗口掉注册：`hunk.exe` 还在，但 `hunk session list` 空）→ 在窗口里 Ctrl+C 后重新 `hunk diff --watch` |
 | 路由 404 / 返回 HTML | host 半没加载 → 重启 `dsh web` |
 | 路由 403 | 信任围栏：`Host` 不是回环 / 带了跨站标记 |

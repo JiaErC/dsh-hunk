@@ -1,9 +1,9 @@
 /**
  * Browser-side data access for the Hunk review tab.
  *
- * Two reads: the session cwd (from the tab scope, or from
- * better-sidebar's own `session.cwd` route when the scope does not carry it)
- * and this plugin's state route, which is what actually runs the Hunk CLI.
+ * One route, read two ways: the structural state (what the review contains) and,
+ * on demand, the raw diff text per file. The cwd that route needs comes from
+ * `./session-cwd`, straight off the client session list.
  */
 import {
   HUNK_PATCH_PARAM,
@@ -32,31 +32,6 @@ export function isAbort(error: unknown): boolean {
 /** Message of any thrown value. */
 export function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
-}
-
-/**
- * Resolve the session working directory.
- *
- * The tab scope carries `cwd` whenever better-sidebar could read it from the
- * client session list; otherwise the sidebar's authoritative route answers.
- * @param scope - the tab's session scope.
- * @param signal - aborts the fallback request.
- * @returns the absolute cwd, or undefined when neither source has one.
- */
-export async function resolveSessionCwd(
-  scope: { sessionId: string; cwd?: string },
-  signal?: AbortSignal,
-): Promise<string | undefined> {
-  if (typeof scope.cwd === 'string' && scope.cwd !== '') return scope.cwd
-  const response = await fetch('/sidebar/api/session.cwd', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ sessionId: scope.sessionId }),
-    signal,
-  })
-  const body = await response.json() as { value?: { cwd?: string } }
-  const cwd = body?.value?.cwd
-  return typeof cwd === 'string' && cwd !== '' ? cwd : undefined
 }
 
 /**

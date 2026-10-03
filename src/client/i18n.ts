@@ -181,9 +181,9 @@ export function useTranslate(ctx: Context): Translate {
 }
 
 /**
- * Translate outside React — for the tab descriptor's `title` / `description`,
- * which better-sidebar evaluates on every tab-bar render (so the language
- * switch is picked up without a React hook of our own).
+ * Translate outside React — for the tab type's thunked `title` and its guide
+ * entry's `title` / `description`, which the native sidebar reads again on every
+ * use (so a language switch is picked up without a React hook of our own).
  * @param ctx - client context.
  * @param key - dictionary key.
  * @param params - `{name}` placeholders.
