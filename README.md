@@ -1,12 +1,15 @@
 # dsh-hunk
 
-给 [DSH](https://github.com/deepseek-ai/deepseek-harness) Web UI 的
-[dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) 增加一个
-**「Hunk 评审」侧栏 tab**（order 40，单实例）：把当前会话仓库里 live
+给 [DSH](https://github.com/deepseek-ai/deepseek-harness) Web UI **自带右侧栏**
+增加一个 **「Hunk 评审」tab**（guide order 40，单实例）：把当前会话仓库里 live
 [Hunk](https://github.com/) 会话的**文件 / hunk / 注释**列出来，带刷新按钮。
 
 **v1 只读**：只读 Hunk 会话，不写评论、不导航、不改动 Hunk 或 DSH 源码；
 挂载走 profile 的 `cordis.patch.yml`（本插件自带一份）。
+
+**不依赖任何第三方侧栏插件**：注册用的是 DSH 自己的原生 tab 注册表
+（`ctx.sidebarRightTabs` + `sidebar.right.pane.tab` 席位），和产品自带 tab 走同一条
+两段式注册路径。装不装 `dsh-better-sidebar` 都不影响这个 tab。
 
 ---
 
@@ -15,18 +18,29 @@
 ```
 浏览器（client half）                       宿主（host half）
 ────────────────────────────                ────────────────────────────────
-ctx.betterSidebar.registerTab(              GET /dsh-hunk/state?cwd=<会话 cwd>
-  id: 'dsh-hunk:review', order: 40)           ├─ 1. hunk session list --json
-        │                                     └─ 2. hunk session review --repo . \
-        ▼  HunkReviewTab                            --json --include-notes
-  ① 取会话 cwd：scope.cwd                         （两条都以该 cwd 为子进程 cwd）
-     退路 POST /sidebar/api/session.cwd              │
-  ② fetch /dsh-hunk/state?cwd=…                      ▼
-  ③ 按文件渲染 hunk + 注释，刷新按钮重跑一遍      JSON（见 src/shared/wire.ts）
+① ctx.sidebarRightTabs.register({           GET /dsh-hunk/state?cwd=<会话 cwd>
+     id/kind: 'dsh-hunk:review',               ├─ 1. hunk session list --json
+     priority: 'extension',                    └─ 2. hunk session review --repo . \
+     guide: [{ order: 40, … }] })                   --json --include-notes
+② ctx.slots.register(                          （两条都以该 cwd 为子进程 cwd）
+     'sidebar.right.pane.tab',                     │
+     key: 'dsh-hunk:review')                        ▼
+        ▼  HunkReviewTab                     JSON（见 src/shared/wire.ts）
+   取会话 cwd：sessions.list 快照（live）
+   ③ fetch /dsh-hunk/state?cwd=…
+   ④ 按文件渲染 hunk + 注释，刷新按钮重跑一遍
 ```
 
-- **tab 注册**：`src/client/index.tsx` 用 `ctx.betterSidebar.registerTab(...)`
-  注册 `dsh-hunk:review`；组件在 `src/client/HunkReviewTab.tsx`。
+- **tab 注册（原生，两段式）**：`src/client/index.tsx` 先用
+  `ctx.sidebarRightTabs.register(...)` 注册 tab **类型**（id/kind、`priority:
+  'extension'`、chip 标题、以及让它在"新建标签页"列表里出现的 guide 条目），再把
+  **body** 注册到 `sidebar.right.pane.tab` 这个 keyed 席位下、键就是那个类型 id。
+  组件在 `src/client/HunkReviewTab.tsx`，它收到的 props 是
+  `{ ctx, sessionId, useTabInfo }`：框架给的 per-tab 读取钩子 + 我们在 body 注册时
+  注入的上下文。
+- **cwd 从客户端会话列表 live 读**（`src/client/session-cwd.ts`）：`sessions.list`
+  快照的 `byId[sessionId].cwd`，用 `useSyncExternalStore` 订阅，所以会话刚加载完
+  cwd 出现时页面会自己跟上，不需要重开或重试。
 - **一条路由，两次读**：`src/index.ts` 只注册 `/dsh-hunk/state`。
   - 默认（结构读）：`hunk session list --json` + `hunk session review --repo . --json
     --include-notes` 并发跑，合成一个 JSON envelope（`ok / cwd / sessions / matched /
@@ -91,8 +105,9 @@ git tag                 # v0.1.0（追认）、v0.2.0、v0.3.0
 git describe --tags     # v0.3.0
 ```
 
-**兼容基线**：本版实测于 **DSH 0.2.0-rc.2 + dsh-better-sidebar 0.24.1**（cordis 4.0.4）；
-上一档基线 DSH 0.1.7-rc.2 + better-sidebar 0.21.1 对应 v0.2.0。本插件不声明
+**兼容基线**：本版实测于 **DSH 0.2.0-rc.2**（cordis 4.0.4；搭档的 better-sidebar
+0.24.1 只作为「同一台机器上装了它」的参考，**不是依赖**）；上一档基线 DSH 0.1.7-rc.2
+对应 v0.2.0 及以前（那时 tab 走的是 better-sidebar）。本插件不声明
 `@deepseek-ai/dsh` peer，理由与「换版本时逐条复核什么」见 AGENTS §5。
 
 - 分支模型、提交规范（Conventional Commits + 中文正文）、发版四步 →
@@ -110,9 +125,10 @@ git describe --tags     # v0.3.0
 | `src/shared/wire.ts` | 两端共享的线上类型与错误码 |
 | `src/shared/notes.ts` | 注释→hunk 归位（按 `hunkIndex`，退回行范围重叠） |
 | `src/shared/patch.ts` | unified diff 文本 → 单条 hunk 切片、行号解析、行类型判定 |
-| `src/client/index.tsx` | client 半：注册 tab |
+| `src/client/index.tsx` | client 半：把 tab 类型与 body 注册进 DSH 自带右侧栏 |
 | `src/client/HunkReviewTab.tsx` | tab 视图（会话条 + 文件/hunk/注释 + 刷新/复制） |
-| `src/client/api.ts` | 浏览器侧请求（cwd 解析 + 结构读 + 按需 patch 读） |
+| `src/client/session-cwd.ts` | 会话 cwd 的原生来源（`sessions.list` 快照 + 订阅） |
+| `src/client/api.ts` | 浏览器侧请求（结构读 + 按需 patch 读） |
 | `src/client/i18n.ts` | zh/en 词典，跟随 `ctx.locale` |
 | `src/client/styles.ts` | 全部走 `--dsw-alias-*` / `--dsw-font-mono` 主题令牌 |
 | `src/client/highlight.ts` | shiki 高亮器（同步 core + JS 引擎 + css-variables 主题）与按行贴回 |
@@ -164,8 +180,11 @@ npm run preview       # 打印当前目录的 payload；npm run preview -- --jso
 3. **装依赖**：在 profile 目录跑 `pnpm install`。
 
 4. **生效**：
-   - client 半：浏览器硬刷新（Ctrl+Shift+R）即可看到 `+` 菜单里的「Hunk 评审」；
+   - client 半：浏览器硬刷新（Ctrl+Shift+R）即可；tab 在 DSH 右侧栏"新建标签页"引导页
+     的列表里（新增条目 `/页面`），点它开一个「Hunk 评审」页；
    - host 半：`dsh web` 需要重启才会挂上 `/dsh-hunk/state`（重启 web 会中断当前会话）。
+
+> 不需要安装 `dsh-better-sidebar`：注册走的是 DSH 自带的右侧栏注册表。
 
 > 也可以走 `plugin_manager` 的 `install_bundle`（把本包目录作为 target），
 > 由它代替第 1–3 步；本 preset 里该工具被禁用，所以上面给的是手工路径。

@@ -20,7 +20,12 @@
   宿主 module table 里的 react（`external: ['react', 'react/jsx-runtime']`）。
   shiki 是 devDependency、被打进 `lib/client.js`。
 - **插件不得 require 宿主的 client 包**（`@deepseek-ai/dsh-client-*`）：客户端能力要么
-  自己打包，要么走 `ctx.betterSidebar` 的方法调用。`import type {}` 被擦除，不受此限。
+  自己打包，要么走**宿主自带的服务**（`ctx.get(...)` + 结构性类型，例如
+  `sidebarRightTabs` / `slots` / `sessions` / `locale`）。`import type {}` 被擦除，不受此限。
+- **不依赖第三方侧栏插件**：tab 走 DSH 原生的两段式注册——tab 类型
+  `ctx.sidebarRightTabs.register(...)`，body 席位 `sidebar.right.pane.tab`（键是类型 id）。
+  `inject` 里等的是 `sidebarRightTabs` / `slots`，不是 `betterSidebar`；装不装
+  better-sidebar 都不影响本 tab。
 - **皮肤契约**：视觉值只消费 `--dsw-alias-*` / `--dsw-font-*` 令牌，不写死颜色；
   图标用 `currentColor`。灰阶只能用半透明叠色令牌——浅色主题里
   `--dsw-alias-bg-layer-1/2/3` 解析成同一个颜色（`neutral-bluish-00`），
@@ -95,24 +100,31 @@ git push origin master --follow-tags   # 推送由维护者决定
 
 ## 5. DSH 版本适配
 
-- **当前基线（v0.3.0 起）**：DSH **0.2.0-rc.2** + better-sidebar **0.24.1** + cordis **4.0.4**。
-  上一档基线是 DSH 0.1.7-rc.2 + better-sidebar 0.21.1（v0.2.0 及以前）。
+- **当前基线（v0.3.0 起）**：DSH **0.2.0-rc.2** + cordis **4.0.4**。
+  （v0.3.0 及以前 tab 走 better-sidebar 0.24.1；现在只用 DSH 自带右侧栏，
+  better-sidebar 不再出现在 peer/devDep 里。上一档 DSH 基线 0.1.7-rc.2 对应 v0.2.0 及以前。）
 - **为什么不声明 `@deepseek-ai/dsh` peer**：宿主启动预检的原话是
   *Check every `@deepseek-ai/dsh` or `@deepseek-ai/dsh-*` peer against the runtime*
-  （`dsh-app-boot`）。我们的 peer 只有 `@deepseek-ai/cordis` 与 `dsh-better-sidebar`，
+  （`dsh-app-boot`）。我们的 peer 只有 `@deepseek-ai/cordis`，
   **不在预检范围内**——好处是永远不会被静默禁用，代价是**换 DSH 版本时没有任何自动门禁**，
   必须人工复核下面的清单；另外 semver 的 caret **跨不过 minor**
   （`^0.1.7-rc.2` 对 `0.2.0-rc.2` 判定为 false），哪天真要声明 peer 就必须同批抬下限。
+- **为什么等注册表而不是等席位声明**：原生席位先 `declare` `sidebar.right.pane.tab`、
+  之后才 `provide` `sidebarRightTabs`，所以**声明触发**的注册回调会读到 `undefined`
+  且再也不会重来（better-sidebar 在真机上踩过：回调拿到两个服务都是 undefined，
+  注册静默丢失）。本插件因此让 `export const inject = ['sidebarRightTabs','slots']`
+  在插件层等注册表，而 body 席位用 `ctx.slots.inject(...)` 等声明。
 - **换版本时的人工复核清单**（逐条给出结论，别只看「能开」）：
 
-| 契约点 | 怎么验 | 0.1.7-rc.2 → 0.2.0-rc.2 实测结论 |
+| 契约点 | 怎么验 | 0.2.0-rc.2（原生注册）实测结论 |
 |---|---|---|
 | `ctx.webServer.register` | 读 `dsh-host-webserver` 的 `WebRoute` / `WebRouteKind` | 形状未变（`kind: 'exact'\|'prefix'`、`path`、`handler`，返回 disposer） |
 | 客户端 module table | 读 `dsh-client-modules` 的解析器；`dsh.client` 字段 | `window.__ModuleLoader__.load({id, factory})` 未变；`platform`（必填 string）、`inject`、`immediately` 仍被接受 |
-| 客户端产物怎么取 | 见下「产物 URL」 | 改为 **combo URL**：`/plugins/??<id>/client.js&rev=<sha1-12>`；实测本插件 200 |
-| `ctx.betterSidebar.registerTab` | 读安装版 `lib/types/client/service.d.ts` | `TabDescriptor` / `TabComponentProps`（`ctx`/`scope`/`visible`）字段未变 |
+| 客户端产物怎么取 | 见下「产物 URL」 | **combo URL**：`/plugins/??<id>/client.js&rev=<sha1-12>`；实测本插件 200 |
+| `ctx.sidebarRightTabs.register` | 读 `dsh-client-ui-sidebar-right` 的 `lib/types/client/tab-registry.d.ts` | 需要 `id`/`kind`/`priority`/`title(address)`；`guide[]` 需要唯一的 `id`、`order`、thunked `title`，`icon` 是**组件**（`({size}) => …`，不是元素） |
+| `sidebar.right.pane.tab` 席位 | 读同包的 `lib/types/client/contract/slots.d.ts` | `{name, key: 类型 id, inject: (sessionId) => props}`；body 拿到的是现成的 **`useTabInfo`** 钩子（不是 `hooks.tabInfo`），其 `tab.visible` 就是可见性 |
+| 会话 cwd | `ctx.sessions.list.getSnapshot().byId[sessionId]?.cwd` | 仍在（`sessions` 是客户端服务；用 `ctx.get` + 结构性类型读，不 require 包） |
 | `ctx.locale`（字典注册） | 读 `dsh-client-locale` 的 `provide("locale")` 与 `register(ns, locale, dict)` | 未变（我们按结构类型调用，不硬依赖包） |
-| `/sidebar/api/session.cwd` | 在 better-sidebar 的 client bundle 里搜 | 仍在（scope 没带 cwd 时的兜底） |
 | 主题令牌 | `npm test` 里的 `theme-tokens.test.mjs` | 见 §1「皮肤层令牌必须带兜底」 |
 
 - **产物 URL 变了要知道**：0.2.0 起插件客户端产物不再按 `/plugins/<id>/client.js`
