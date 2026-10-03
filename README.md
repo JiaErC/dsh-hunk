@@ -82,17 +82,21 @@ ctx.betterSidebar.registerTab(              GET /dsh-hunk/state?cwd=<会话 cwd>
 
 ## 版本与发版
 
-当前版本 **v0.2.0**（`package.json#version` 是版本源，tag 与它必须一致）。
+当前版本 **v0.3.0**（`package.json#version` 是版本源，tag 与它必须一致）。
 本项目 `private: true`、用 `link:` 挂载，**不发布到 npm**，所以一次「发版」= 版本号 +
 [CHANGELOG](CHANGELOG.md) 条目 + 轻量 tag：
 
 ```bash
-git tag                 # v0.1.0（追认）、v0.2.0
-git describe --tags     # v0.2.0
+git tag                 # v0.1.0（追认）、v0.2.0、v0.3.0
+git describe --tags     # v0.3.0
 ```
 
-- 分支模型、提交规范（Conventional Commits + 中文正文）、发版四步、
-  DSH 版本适配要复核的三件事 → **[AGENTS.md](AGENTS.md)**。
+**兼容基线**：本版实测于 **DSH 0.2.0-rc.2 + dsh-better-sidebar 0.24.1**（cordis 4.0.4）；
+上一档基线 DSH 0.1.7-rc.2 + better-sidebar 0.21.1 对应 v0.2.0。本插件不声明
+`@deepseek-ai/dsh` peer，理由与「换版本时逐条复核什么」见 AGENTS §5。
+
+- 分支模型、提交规范（Conventional Commits + 中文正文）、发版四步 →
+  **[AGENTS.md](AGENTS.md)**。
 - 完整发布历史（含每版的实测证据）→ **[CHANGELOG.md](CHANGELOG.md)**。
 - 本地调试与安装脚本 → **[DEBUGGING.md](DEBUGGING.md)**。
 
