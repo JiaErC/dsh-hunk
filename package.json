@@ -1,6 +1,6 @@
 {
   "name": "dsh-hunk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "在 DSH 右侧栏为 dsh-better-sidebar 增加一个「Hunk 评审」tab：把当前会话 cwd 下 live Hunk 会话的文件 / hunk / 注释列出来（只读）。",
   "repository": {
