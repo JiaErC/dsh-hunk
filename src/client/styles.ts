@@ -18,13 +18,26 @@ export const token = {
   /** Sunken blocks (command lines, hunk headers). */
   sunken: 'var(--dsw-alias-bg-base)',
   border: 'var(--dsw-alias-border-l2)',
-  hairline: 'var(--dsw-alias-hairline)',
+  /**
+   * Skin-layer names, each with a host-defined fallback.
+   *
+   * `--dsw-alias-hairline` / `-accent` / `-accent-soft` / `-danger` and
+   * `--dsw-font-mono` are **not defined by the DSH theme package** — not in
+   * 0.1.7-rc.2 (395 tokens) and not in 0.2.0-rc.2 (404 tokens); better-sidebar
+   * itself uses them, so they are a skin-layer set that exists only when a skin
+   * supplies it. An unset custom property makes the whole declaration *invalid at
+   * computed-value time*: the border or background silently falls back to its
+   * initial value instead of the intended colour. Each one therefore carries a
+   * fallback from the alias family this build really defines — and
+   * `test/theme-tokens.test.mjs` re-checks that on every later upgrade.
+   */
+  hairline: 'var(--dsw-alias-hairline, var(--dsw-alias-border-l1))',
   text: 'var(--dsw-alias-label-primary)',
   textSecondary: 'var(--dsw-alias-label-secondary)',
   textTertiary: 'var(--dsw-alias-label-tertiary)',
-  accent: 'var(--dsw-alias-accent)',
-  accentSoft: 'var(--dsw-alias-accent-soft)',
-  danger: 'var(--dsw-alias-danger)',
+  accent: 'var(--dsw-alias-accent, var(--dsw-alias-state-business-primary))',
+  accentSoft: 'var(--dsw-alias-accent-soft, var(--dsw-alias-state-business-tertiary))',
+  danger: 'var(--dsw-alias-danger, var(--dsw-alias-state-error-primary))',
   success: 'var(--dsw-alias-state-success-primary)',
   hover: 'var(--dsw-alias-interactive-bg-hover)',
   /**
@@ -41,7 +54,8 @@ export const token = {
   tintStrong: 'var(--dsw-alias-interactive-bg-active)',
   /** Two steps stronger: the file row, so a group header reads above its hunks. */
   tintHeader: 'var(--dsw-alias-interactive-bg-hover-accent)',
-  mono: 'var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)',
+  /** Code font: the skin's mono first, then the host's own code-block family. */
+  mono: 'var(--dsw-font-mono, var(--dsw-font-markdown-code-font-family, ui-monospace, SFMono-Regular, Menlo, monospace))',
 } as const
 
 const fontFamily = 'inherit'

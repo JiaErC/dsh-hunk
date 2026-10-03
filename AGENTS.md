@@ -25,6 +25,12 @@
   图标用 `currentColor`。灰阶只能用半透明叠色令牌——浅色主题里
   `--dsw-alias-bg-layer-1/2/3` 解析成同一个颜色（`neutral-bluish-00`），
   用它们做「浅灰」等于什么都没画。
+- **皮肤层令牌必须带兜底**：宿主主题包**并不定义**全部别名令牌（0.1.7-rc.2 定义 395 个、
+  0.2.0-rc.2 定义 404 个；`--dsw-alias-hairline` / `-accent` / `-accent-soft` / `-danger`、
+  `--dsw-font-mono` 两版都没有）。自定义属性未定义会让**整条声明在计算值阶段失效**，
+  边框/底色会静默退回初始值——不报错、只是长得不对。所以每个这类名字都要写成
+  `var(--dsw-alias-accent, var(--dsw-alias-state-business-primary))`，由
+  `test/theme-tokens.test.mjs` 守住「用到的令牌要么宿主有定义，要么写了兜底」。
 - **构建包装器不得缩进 bundle body**：esbuild 的 minifier 把含换行的字符串打印成
   跨行模板字面量，缩进会被插进字符串值（`'\n'` → `'\n\t\t'`，症状是 shiki 返回的行
   莫名多出制表符）。`build.mjs` 的 `registerBundle` 因此把 body 原样插在零缩进处。
@@ -89,16 +95,41 @@ git push origin master --follow-tags   # 推送由维护者决定
 
 ## 5. DSH 版本适配
 
-- 当前基线与实测环境：**DSH 0.1.7-rc.2** + **better-sidebar 0.21.1**（见 CHANGELOG）。
-- 本插件**不声明** `@deepseek-ai/dsh` peer（宿主启动预检只检查 `@deepseek-ai/dsh*`
-  范围的 peer，声明了反而可能因范围不匹配被整行静默禁用）。因此 DSH 换版本时
-  **没有自动门禁**，必须人工复核这三件事，并写进 CHANGELOG 的「🌐 基线」条目：
-  1. `ctx.webServer.register` 的 `{ kind, path, handler }` 形状；
-  2. 客户端 module table 的基线 external（`react` / `react/jsx-runtime`）；
-  3. `ctx.betterSidebar.registerTab` 的 TabDescriptor 字段（`id / title / description /
-     icon / order / single / component`）。
-- 注意 semver 的 caret **跨不过 minor**（`^0.1.7-rc.1` 对 `0.2.0-rc.1` 判定为 false）。
-  这条是上游用真机踩出来的：一旦声明 DSH peer，换 minor 时必须同批抬下限。
+- **当前基线（v0.3.0 起）**：DSH **0.2.0-rc.2** + better-sidebar **0.24.1** + cordis **4.0.4**。
+  上一档基线是 DSH 0.1.7-rc.2 + better-sidebar 0.21.1（v0.2.0 及以前）。
+- **为什么不声明 `@deepseek-ai/dsh` peer**：宿主启动预检的原话是
+  *Check every `@deepseek-ai/dsh` or `@deepseek-ai/dsh-*` peer against the runtime*
+  （`dsh-app-boot`）。我们的 peer 只有 `@deepseek-ai/cordis` 与 `dsh-better-sidebar`，
+  **不在预检范围内**——好处是永远不会被静默禁用，代价是**换 DSH 版本时没有任何自动门禁**，
+  必须人工复核下面的清单；另外 semver 的 caret **跨不过 minor**
+  （`^0.1.7-rc.2` 对 `0.2.0-rc.2` 判定为 false），哪天真要声明 peer 就必须同批抬下限。
+- **换版本时的人工复核清单**（逐条给出结论，别只看「能开」）：
+
+| 契约点 | 怎么验 | 0.1.7-rc.2 → 0.2.0-rc.2 实测结论 |
+|---|---|---|
+| `ctx.webServer.register` | 读 `dsh-host-webserver` 的 `WebRoute` / `WebRouteKind` | 形状未变（`kind: 'exact'\|'prefix'`、`path`、`handler`，返回 disposer） |
+| 客户端 module table | 读 `dsh-client-modules` 的解析器；`dsh.client` 字段 | `window.__ModuleLoader__.load({id, factory})` 未变；`platform`（必填 string）、`inject`、`immediately` 仍被接受 |
+| 客户端产物怎么取 | 见下「产物 URL」 | 改为 **combo URL**：`/plugins/??<id>/client.js&rev=<sha1-12>`；实测本插件 200 |
+| `ctx.betterSidebar.registerTab` | 读安装版 `lib/types/client/service.d.ts` | `TabDescriptor` / `TabComponentProps`（`ctx`/`scope`/`visible`）字段未变 |
+| `ctx.locale`（字典注册） | 读 `dsh-client-locale` 的 `provide("locale")` 与 `register(ns, locale, dict)` | 未变（我们按结构类型调用，不硬依赖包） |
+| `/sidebar/api/session.cwd` | 在 better-sidebar 的 client bundle 里搜 | 仍在（scope 没带 cwd 时的兜底） |
+| 主题令牌 | `npm test` 里的 `theme-tokens.test.mjs` | 见 §1「皮肤层令牌必须带兜底」 |
+
+- **产物 URL 变了要知道**：0.2.0 起插件客户端产物不再按 `/plugins/<id>/client.js`
+  单独提供，而是 **combo** 形式
+  `/plugins/??<id>/client.js&rev=<sha1-12>`，`rev` 由该文件 `mtimeMs/ctimeMs/size`
+  经 `framedHash("plugin-artifact", …)` 得出（`HASH_REVISION_LENGTH = 12`）。
+  这是**宿主自己拼的**，我们不需要改代码；但手工排查「tab 没出来」时别再拿朴素路径去试
+  （一定 404，会误判成插件没加载）。
+- **本 profile 的 401 与我们的路由无关**：这个 web profile 里 `/`、`/api/*` 被
+  `dsh-remote-web-ui` 那道远程访问门挡在 401（响应里**没有** `WWW-Authenticate`），
+  而经 `webServer.register` 注册的插件路由**不在门内**。也就是说
+  `/dsh-hunk/state` 的唯一守卫是**我们自己的围栏**（loopback Host，或 `trustedHosts`
+  命中且带同源标记）。因此：放宽 `trustedHosts` 等于把这条只读接口交给远端，改之前先想清楚。
+- **换版本的动作顺序**：改 `package.json` 的 peer + devDep → 删 `node_modules` 与
+  `package-lock.json` 干净重装（原地 `npm i` 会 ERESOLVE：旧线 peer 与新线 peer 混图）→
+  `npm run typecheck`（对着新类型）→ `npm test` → 按 §4 发版，把结论写进 CHANGELOG 的
+  「🌐 基线」与「🧪 验证」。
 
 ## 6. 文档同步纪律
 
