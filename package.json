@@ -53,10 +53,12 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.4",
+    "@shikijs/langs": "^4.5.0",
     "@types/node": "^22.15.0",
     "@types/react": "^18.3.12",
     "dsh-better-sidebar": "^0.21.1",
     "esbuild": "^0.25.0",
+    "shiki": "^4.5.0",
     "typescript": "^5.7.0"
   },
   "engines": {

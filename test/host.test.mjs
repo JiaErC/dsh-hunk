@@ -16,6 +16,8 @@ import {
   HUNK_ERROR,
   HUNK_PATCH_COMMAND,
   HunkRouteError,
+  LANGUAGE_EXTENSIONS,
+  TOKEN_FALLBACKS,
   clearPatchCache,
   collectHunkPatches,
   collectHunkState,
@@ -24,6 +26,7 @@ import {
   hunkOfNote,
   isLoopbackHostname,
   isTrustedRequest,
+  languageForPath,
   locationKey,
   matchSession,
   notesForDisplay,
@@ -403,6 +406,27 @@ test('parsePatchesPayload refuses a structural payload and normalizes a patch on
     missing: ['c.ts'],
     error: null,
   })
+})
+
+test('languageForPath maps the bundled grammars and refuses everything else', () => {
+  assert.equal(languageForPath('src/a.ts'), 'typescript')
+  assert.equal(languageForPath('src/a.tsx'), 'tsx')
+  // shiki ships JSX inside the `tsx` bundle, so .jsx is claimed by the same grammar.
+  assert.equal(languageForPath('a/b/c.jsx'), 'tsx')
+  assert.equal(languageForPath('Dockerfile'), 'dockerfile')
+  assert.equal(languageForPath('scripts/Makefile'), 'make')
+  assert.equal(languageForPath('a.MD'), 'markdown')
+  assert.equal(languageForPath('a.b.json'), 'json')
+  // No extension, a dotfile, an unknown suffix, and a prototype key: plain text.
+  assert.equal(languageForPath('README'), undefined)
+  assert.equal(languageForPath('.gitignore'), undefined)
+  assert.equal(languageForPath('a.txt'), undefined)
+  assert.equal(languageForPath('a.constructor'), undefined)
+  assert.equal(languageForPath('a.'), undefined)
+  // The map is broad; the client test checks every id it names against the
+  // grammars the browser bundle actually loads.
+  assert.ok(Object.keys(LANGUAGE_EXTENSIONS).length > 30)
+  assert.ok(TOKEN_FALLBACKS['token-keyword'].includes('--dsw-alias-'))
 })
 
 test('live: the state read advertises the patch capability', async (t) => {

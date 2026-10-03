@@ -57,6 +57,15 @@ ctx.betterSidebar.registerTab(              GET /dsh-hunk/state?cwd=<会话 cwd>
   这类标记整行跨列。配色沿用宿主的 diff 令牌（8% 底色）。
 - **只有代码画框**：屏幕上唯一的圆角边框属于 diff 正文，文件条目本身不画框，
   注释不会被框进去——一眼就能分出「这是代码」和「这是评审」。
+- **代码高亮和宿主同一个引擎**：用 shiki 的同步 core + JS 正则引擎
+  （`createHighlighterCoreSync` / `createJavaScriptRegexEngine`），主题用
+  `createCssVariablesTheme`，token 颜色交给 `--shiki-*` 变量——和宿主
+  `ui-primitives` 完全一致。差别只有一处：我们给这些变量配了 **DSH alias 令牌
+  兜底**（`var(--shiki-token-keyword, color-mix(…))`），所以皮肤没定义 `--shiki-*`
+  时也是有颜色的代码，而不是整片同色。语言按扩展名判定（ts/tsx/js/jsx/json/sh/
+  py/go/rust/java/c/yaml/toml/ini/md/css/html/xml/sql/diff/ps1/lua/kt/make/
+  Dockerfile），未命中的文件按纯文本渲染（和加高亮之前一样）。两侧各自作为一整块
+  tokenize（块注释、多行字符串才认得对），再按行贴回并排的两列。
 - **注释贴在代码上**：展开某个 hunk 时，它的注释直接插在 diff 里、落在被评论的
   那几行下面（跨行锚点落在范围的最后一行；旧/新锚点同时存在时以新侧为准）。
   hunk 收起时注释回到 hunk 行下方——和展开前一样。锚点不在本段 diff 里的注释
@@ -81,7 +90,9 @@ ctx.betterSidebar.registerTab(              GET /dsh-hunk/state?cwd=<会话 cwd>
 | `src/client/api.ts` | 浏览器侧请求（cwd 解析 + 结构读 + 按需 patch 读） |
 | `src/client/i18n.ts` | zh/en 词典，跟随 `ctx.locale` |
 | `src/client/styles.ts` | 全部走 `--dsw-alias-*` / `--dsw-font-mono` 主题令牌 |
-| `build.mjs` | esbuild：host 出 ESM，client 出 `__ModuleLoader__.load` 包装 |
+| `src/client/highlight.ts` | shiki 高亮器（同步 core + JS 引擎 + css-variables 主题）与按行贴回 |
+| `src/shared/languages.ts` | 扩展名 → 语法映射、`--shiki-*` 的 alias 令牌兜底 |
+| `build.mjs` | esbuild：host 出 ESM，client 出 `__ModuleLoader__.load` 包装（body 原样插入，见下） |
 | `test/*.test.mjs` | 记录型 payload 单测 + 真实 CLI 活体测试 + 假 webserver 路由测试 + client bundle 测试 |
 | `scripts/preview.mjs` | 不开浏览器，直接打印 tab 会渲染的那份 JSON |
 
@@ -94,7 +105,13 @@ npm test              # 先构建，再跑 22 个用例（含真实 hunk CLI 活
 npm run preview       # 打印当前目录的 payload；npm run preview -- --json 看原文
 ```
 
-产物：`lib/index.js`（host）、`lib/client.js`（浏览器）、`lib/types/**`。
+产物：`lib/index.js`（host，~28 KB）、`lib/client.js`（浏览器，压缩后 ~1.3 MB，
+大部分是内联的 shiki 语法）、`lib/types/**`。
+
+> ⚠️ 包装 client bundle 时**不要**为了好看去缩进它的内容：esbuild 的 minifier 会把
+> 含换行的字符串打印成跨行模板字面量，缩进会被插进字符串值里——整个 bundle 里的
+> `'\n'` 会变成 `'\n\t\t'`（症状是 shiki 返回的行莫名多出制表符）。`build.mjs`
+> 因此把 bundle body 原样插在零缩进处。
 
 ## 挂载到 profile
 
@@ -157,6 +174,11 @@ npm run preview       # 打印当前目录的 payload；npm run preview -- --jso
   patch 文本，下次展开 hunk 时重新拉。
 - 变动读要给每个文件重建一份 patch，所以第一次展开 hunk 有一次可感知的等待；
   之后同一 cwd 的展开与复制都走缓存。
+- 语法高亮是**按需的**：只有展开 hunk 时才对那一块 tokenize（每块结果进 LRU 缓存），
+  折叠着的 hunk 一分钱不花。语言表写死在这份代码里（`src/shared/languages.ts` +
+  `highlight.ts` 的 import 列表）；要加一门语言就加一行 import 和几条扩展名——
+  代价是 client bundle 会跟着变大（每门语言几十到几百 KB），这也是没把 shiki 的
+  全部语言塞进来的原因。
 - 视图只验证到「host 路由返回真实数据 + client bundle 注册出正确的 tab 描述符」；
   浏览器里的观感需要人工确认（本仓库的自动化测试跑不出真实渲染）。
 - `lib/` 是构建产物（已 gitignore），挂载前需要 `npm run build`；改动 host 半后

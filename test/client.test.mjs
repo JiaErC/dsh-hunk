@@ -12,6 +12,8 @@
  */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+// The row layout the highlighter aligns against lives in the host bundle.
+import { toSplitRows } from '../lib/index.js'
 
 /** The react surface the bundle requests (nothing is rendered here). */
 function reactStub() {
@@ -155,4 +157,83 @@ test('apply still works without a locale service', async () => {
   plugin.apply(ctx)
   assert.equal(tabs.length, 1)
   assert.equal(tabs[0].id, 'dsh-hunk:review')
+})
+
+/*
+ * The highlighter. These run against the built bundle — shiki is inlined there,
+ * so materializing it in node exercises exactly the code the browser gets.
+ */
+
+test('every language the path map claims is actually bundled', async () => {
+  const plugin = await loadPlugin()
+  const loaded = plugin.loadedLanguages()
+  assert.ok(loaded.includes('typescript'), 'typescript grammar missing')
+  assert.ok(loaded.length > 20, `expected a broad grammar set, got ${loaded.length}`)
+  // The map is the contract: an id it names but the bundle lacks would silently
+  // render that file as plain text after promising a grammar.
+  const wanted = [...new Set(Object.values(plugin.LANGUAGE_EXTENSIONS))]
+  assert.deepEqual(wanted.filter(id => !loaded.includes(id)), [])
+  // .tsx/.jsx come from shiki's separate `tsx` bundle — easy to forget, and this
+  // repo's own files are .tsx.
+  assert.ok(loaded.includes('tsx'))
+  assert.equal(plugin.languageForPath('a.jsx'), 'tsx')
+})
+
+test('highlightBlock colours tokens through css variables with alias fallbacks', async () => {
+  const plugin = await loadPlugin()
+  const code = 'const answer: number = 42 // the meaning\nfunction f() { return "x" }'
+  const lines = plugin.highlightBlock(code, 'typescript')
+  assert.equal(lines.length, 2)
+  // Tokenizing must not lose or reorder text.
+  assert.equal(lines.map(line => line.map(token => token.text).join('')).join('\n'), code)
+
+  const colors = lines.flat().map(token => token.color ?? '')
+  // Theme variables first, DSH alias tokens as the fallback in the same value:
+  // a deployment without --shiki-* still gets coloured code.
+  assert.ok(colors.some(color => color.includes('var(--shiki-token-keyword')), 'no keyword colour')
+  assert.ok(colors.some(color => color.includes('--dsw-alias-')), 'no alias fallback in the colour')
+  assert.equal(colors.filter(color => color.includes('--shiki-token-comment')).length, 1)
+  for (const token of lines.flat()) {
+    assert.equal(typeof token.text, 'string')
+    assert.ok(token.fontStyle === undefined || typeof token.fontStyle === 'number')
+  }
+})
+
+test('tokenizeSides aligns tokens to the split rows it was given', async () => {
+  const plugin = await loadPlugin()
+  // context, a replacement, a pure addition, a pure deletion, a marker.
+  const rows = toSplitRows({
+    header: '@@ -1,3 +1,3 @@',
+    lines: [' const keep = 1', '-const a = 1', '+const a = 2', '+const b = 3', ' const tail = 4', '-gone'],
+    text: '',
+  })
+  const tokens = plugin.tokenizeSides(rows, 'typescript')
+  assert.equal(tokens.left.length, rows.length)
+  assert.equal(tokens.right.length, rows.length)
+  for (const [index, row] of rows.entries()) {
+    assert.equal(tokens.left[index] === undefined, row.left === undefined, `left row ${index}`)
+    assert.equal(tokens.right[index] === undefined, row.right === undefined, `right row ${index}`)
+    // An aligned line must reproduce that cell's text exactly.
+    for (const [side, cell] of [['left', row.left], ['right', row.right]]) {
+      const line = tokens[side][index]
+      if (line === undefined || cell === undefined) continue
+      assert.equal(line.map(token => token.text).join(''), cell.text)
+    }
+  }
+  // Each side is tokenized as its own block: out of the alignment the two sides
+  // still carry their own content.
+  assert.equal(tokens.right[1].map(token => token.text).join(''), 'const a = 2')
+  assert.equal(tokens.left[1].map(token => token.text).join(''), 'const a = 1')
+})
+
+test('an unknown grammar yields no tokens, so the rows stay plain text', async () => {
+  const plugin = await loadPlugin()
+  plugin.clearHighlightCache()
+  assert.deepEqual(plugin.highlightBlock('hello', 'no-such-language'), [])
+  assert.equal(plugin.tokenizeSides([{ kind: 'context', left: { no: 1, text: 'x' }, right: { no: 1, text: 'x' } }], 'no-such-language'), undefined)
+  // A successful call is cached (same array identity on the second call).
+  plugin.clearHighlightCache()
+  const first = plugin.highlightBlock('const x = 1', 'typescript')
+  assert.ok(first.length > 0)
+  assert.equal(plugin.highlightBlock('const x = 1', 'typescript'), first)
 })

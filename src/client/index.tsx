@@ -70,3 +70,17 @@ export function apply(ctx: Context): void {
     'dsh-hunk: review tab',
   )
 }
+
+/*
+ * Test seam: the highlighter is browser code (bundled shiki), so the only way
+ * to exercise it is through this bundle — `test/client.test.mjs` materializes
+ * it the way the module system does and drives these exports directly.
+ */
+export {
+  HIGHLIGHT_THEME,
+  clearHighlightCache,
+  highlightBlock,
+  loadedLanguages,
+  tokenizeSides,
+} from './highlight'
+export { languageForPath, TOKEN_FALLBACKS, LANGUAGE_EXTENSIONS } from '../shared/languages'

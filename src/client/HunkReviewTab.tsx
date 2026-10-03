@@ -20,6 +20,8 @@ import type {
   HunkStatePayload,
 } from '../shared/wire'
 import { groupNotes, pathKey } from '../shared/notes'
+import { languageForPath, type HighlightToken, type HighlightedLine } from '../shared/languages'
+import { tokenizeSides, type SideTokens } from './highlight'
 import {
   notesForDisplay,
   pickPatchHunk,
@@ -200,28 +202,51 @@ function SplitSide(props: {
   cell: SplitCell | undefined
   sign: string
   hue?: CSSProperties
+  /** Syntax tokens for this line, when a grammar claimed the file. */
+  tokens?: HighlightedLine
 }): ReactNode {
-  const { cell, sign, hue } = props
+  const { cell, sign, hue, tokens } = props
   return (
     <span style={{ ...styles.splitSide, ...(hue ?? {}) } as CSSProperties}>
       <span style={styles.splitNo as CSSProperties}>{cell === undefined ? '' : cell.no}</span>
       <span style={styles.splitSign as CSSProperties}>{cell === undefined ? '' : sign}</span>
-      <span style={styles.splitText as CSSProperties}>{cell?.text ?? ''}</span>
+      <span style={styles.splitText as CSSProperties}>
+        {tokens === undefined || tokens.length === 0
+          ? cell?.text ?? ''
+          : tokens.map((token, index) => (
+              <span key={index} style={tokenStyle(token)}>{token.text}</span>
+            ))}
+      </span>
     </span>
   )
+}
+
+/** The inline style for one syntax token (colour, plus italics/bold/underline). */
+function tokenStyle(token: HighlightToken): CSSProperties | undefined {
+  const style: CSSProperties = {}
+  if (token.color !== undefined) style.color = token.color
+  if (token.fontStyle !== undefined) {
+    if ((token.fontStyle & 1) !== 0) style.fontStyle = 'italic'
+    if ((token.fontStyle & 2) !== 0) style.fontWeight = 600
+    if ((token.fontStyle & 4) !== 0) style.textDecoration = 'underline'
+  }
+  return Object.keys(style).length === 0 ? undefined : style
 }
 
 /**
  * The side-by-side body of one hunk: deletions on the left, additions on the
  * right, context on both — with the hunk's notes drawn directly under the rows
- * they review.
+ * they review. Each side's text is syntax-highlighted when a grammar claimed
+ * the file; the sign keeps the add/remove hue either way.
  */
 function HunkDiff(props: {
   rows: readonly SplitRow[]
+  /** Absent when no grammar claimed the file: the rows render as plain text. */
+  tokens?: SideTokens
   notesByRow: Map<number, HunkReviewNote[]>
   t: Translate
 }): ReactNode {
-  const { rows, notesByRow, t } = props
+  const { rows, tokens, notesByRow, t } = props
   return (
     <div style={styles.diffBody as CSSProperties}>
       {rows.map((row, index) => (
@@ -233,12 +258,14 @@ function HunkDiff(props: {
                   <SplitSide
                     cell={row.left}
                     sign={row.kind === 'change' ? '-' : ' '}
+                    tokens={tokens?.left[index]}
                     hue={row.kind === 'change' && row.left !== undefined ? { ...styles.diffDel, ...styles.diffDelText } as CSSProperties : undefined}
                   />
                   <span style={styles.splitDivider as CSSProperties} />
                   <SplitSide
                     cell={row.right}
                     sign={row.kind === 'change' ? '+' : ' '}
+                    tokens={tokens?.right[index]}
                     hue={row.kind === 'change' && row.right !== undefined ? { ...styles.diffAdd, ...styles.diffAddText } as CSSProperties : undefined}
                   />
                 </div>
@@ -281,6 +308,14 @@ function HunkView(props: {
   const placed = useMemo(
     () => (rows === undefined ? undefined : placeNotes(rows, notes)),
     [rows, notes],
+  )
+  // Highlighting is per file (grammar from the extension) and per block, so a
+  // hunk that is shown again — or a second hunk of the same file — reuses the
+  // tokenizer's cache instead of re-tokenizing.
+  const language = useMemo(() => languageForPath(filePath), [filePath])
+  const tokens = useMemo(
+    () => (rows === undefined || language === undefined ? undefined : tokenizeSides(rows, language)),
+    [rows, language],
   )
   // The hunk's disclosure owns its code, and nothing else: while the code is
   // hidden every note drops below the hunk row, so collapsing never costs a
@@ -350,7 +385,7 @@ function HunkView(props: {
           </div>
           {rows === undefined
             ? <div style={styles.diffNotice as CSSProperties}>{notice}</div>
-            : <HunkDiff rows={rows} notesByRow={inline} t={t} />}
+            : <HunkDiff rows={rows} tokens={tokens} notesByRow={inline} t={t} />}
         </div>
       )}
       {below.map(note => <NoteView key={note.noteId} t={t} note={note} />)}

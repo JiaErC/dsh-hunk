@@ -185,6 +185,13 @@ export {
 export { isLoopbackHostname, isTrustedRequest } from './host/trust-fence'
 export { groupNotes, hunkOfNote, overlaps, pathKey } from './shared/notes'
 export {
+  LANGUAGE_EXTENSIONS,
+  LANGUAGE_FILENAMES,
+  TOKEN_FALLBACKS,
+  languageForPath,
+} from './shared/languages'
+export type { HighlightToken, HighlightedLine } from './shared/languages'
+export {
   hunkLineNumbers,
   notesForDisplay,
   parsePatchesPayload,
