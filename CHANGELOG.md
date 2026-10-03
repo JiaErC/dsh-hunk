@@ -5,6 +5,50 @@
 > 版本号即 `package.json#version`；每次发版在同一提交上打轻量 tag `vX.Y.Z`
 > （预发布用 `-rc.N` / `-alpha.N`）。约定与流程见 [AGENTS.md](AGENTS.md)。
 
+### v0.3.0
+
+> 🌐 **换到 DSH 0.2.0 线上**：宿主 0.1.7-rc.2 → **0.2.0-rc.2**、better-sidebar
+> 0.21.1 → **0.24.1**（跨 minor）。逐个复核了本插件消费的每个契约点——
+> **业务代码零改动**（插件只用稳定那几层），真正要改的是清单里的基线与我们对宿主令牌的
+> 两个错误假设。
+
+- 🌐 **基线迁移**：peer 与 devDependency 的 `dsh-better-sidebar` 从 `^0.21.1` 抬到
+  `^0.24.1`（caret **跨不过 minor**，旧范围对新版本判定为 false——这条范围其实一直是错的，
+  只是没人校验）；`@deepseek-ai/cordis` 仍是 `^4.0.4`。devDeps 干净重装后为
+  better-sidebar 0.24.1 + 34 个 `@deepseek-ai/*@0.2.0-rc.2`。
+  ⚠️ 原地 `npm i` 会 ERESOLVE（旧线 peer 与新线 peer 混图），必须删掉 `node_modules`
+  与 `package-lock.json` 再装。
+- 🐛 **修掉 5 个「从来没被定义过」的样式令牌**：`--dsw-alias-hairline` / `-accent` /
+  `-accent-soft` / `-danger`、`--dsw-font-mono` **不在宿主主题包里**——对比过两版：
+  0.1.7-rc.2 定义 395 个令牌、0.2.0-rc.2 定义 404 个，两版都没有这 5 个（它们属于皮肤层，
+  只有皮肤提供时才存在；better-sidebar 自己也在用）。自定义属性未定义会让**整条声明在
+  计算值阶段失效**，所以注释的左侧强调条、失败块的边框、分隔线、焦点徽标底色一直在
+  「静默退回初始值」。现在每个都带**宿主已定义的兜底**
+  （`var(--dsw-alias-accent, var(--dsw-alias-state-business-primary))` 这类），
+  代码字体也接上宿主的代码块字族 `--dsw-font-markdown-code-font-family`。
+- 🧪 **新增回归守卫** `test/theme-tokens.test.mjs`：断言「本插件消费的每个 `--dsw-*`
+  要么宿主这个版本有定义，要么写成带兜底的 `var(--token, …)`」，把这次的人工审计
+  变成下次升级会自动报警的门禁（找不到 DSH 安装时跳过）。实测：宿主定义 404 个、
+  本插件消费 22 个。
+- 🧪 **验证**：`tsc --noEmit` 对着 better-sidebar 0.24.1 + 0.2.0-rc.2 的类型**零错误**；
+  `npm test` **35/35 全过**（含 3 条跑真实 `hunk` CLI 的活体用例）；对**正在运行的新宿主**
+  实测两件事——host 半路由仍答 200（`capabilities.patches = true`）、
+  客户端产物仍被下发（`/plugins/??dsh-hunk/client.js&rev=…` → 200，1,284,583 字节，
+  开头就是我们的 `__ModuleLoader__.load` 包装）。
+- 📝 **契约复核结论（全部未变）**：`webServer.register` 的 `WebRoute`
+  （`kind: 'exact' | 'prefix'` / `path` / `handler`）；`window.__ModuleLoader__.load({id, factory})`
+  与 `dsh.client` 的 `platform` / `inject` / `immediately`；`TabDescriptor` 与
+  `TabComponentProps`（`ctx` / `scope` / `visible`）；`ctx.locale.register(ns, locale, dict)`；
+  better-sidebar 的 `/sidebar/api/session.cwd`。宿主 peer 预检只检查
+  `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` 名字的 peer，我们的 peer 不在其列——
+  因此不会被静默禁用，代价是**升级没有自动门禁**，只能靠上面这份清单。
+- ⚠️ **两个环境事实记进 AGENTS**：① 0.2.0 起插件客户端产物走 **combo URL**
+  （`/plugins/??<id>/client.js&rev=<sha1-12>`，`rev` 由 `mtimeMs/ctimeMs/size` 推出；
+  朴素的 `/plugins/<id>/client.js` 必然 404，排查时别误判成插件没加载）；
+  ② 本 profile 的 `/` 与 `/api/*` 多了一道远程访问门（401，由新装的
+  `dsh-remote-web-ui` 提供），而插件路由**不在门内**——`/dsh-hunk/state` 的唯一守卫
+  仍是我们自己的 loopback 围栏。
+
 ### v0.2.0
 
 > 📝 **首个功能完整的版本**：从「能看到评审」走到「像一份正经的评审面板」——
