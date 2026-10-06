@@ -367,4 +367,22 @@ export const styles = {
     fontSize: 11,
     margin: '2px 0 4px',
   },
+  /** The window-opening notice: quiet while it is merely reporting progress. */
+  watch: {
+    marginBottom: 8,
+    padding: '7px 9px',
+    borderRadius: 6,
+    background: token.tint,
+    color: token.textSecondary,
+    fontSize: 12,
+  },
+  /** The same notice when the reader has to act (failed / unsupported / cooldown). */
+  watchLoud: {
+    marginBottom: 8,
+    padding: '7px 9px',
+    borderRadius: 6,
+    background: token.tintStrong,
+    color: token.text,
+    fontSize: 12,
+  },
 } satisfies Record<string, CSSProperties>

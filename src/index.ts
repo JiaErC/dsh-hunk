@@ -25,7 +25,14 @@ import {
   type HunkCliOptions,
 } from './host/hunk-cli'
 import { isTrustedRequest } from './host/trust-fence'
-import { HUNK_ERROR, HUNK_PATCH_PARAM, HUNK_STATE_PATH, type HunkErrorPayload } from './shared/wire'
+import { startHunkWatch, type WatchStartOptions } from './host/watch-start'
+import {
+  HUNK_ERROR,
+  HUNK_PATCH_PARAM,
+  HUNK_STATE_PATH,
+  HUNK_WATCH_PATH,
+  type HunkErrorPayload,
+} from './shared/wire'
 
 /** The host service this plugin needs before it can mount anything. */
 export const inject = ['webServer']
@@ -79,6 +86,84 @@ interface RouteDeps {
   trustedHosts: () => readonly string[]
   /** Executable and timeout for the Hunk CLI. */
   cli: HunkCliOptions
+  /** Automatic window opening, and its seams (see ./host/watch-start.ts). */
+  watch: WatchStartOptions
+}
+
+/** Largest watch request body accepted, so a stray client cannot park memory here. */
+const MAX_WATCH_BODY_BYTES = 4096
+
+/** Read a small JSON request body. */
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  return await new Promise((resolveBody, rejectBody) => {
+    let size = 0
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (size > MAX_WATCH_BODY_BYTES) {
+        rejectBody(new Error('request body is too large'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => {
+      try {
+        resolveBody(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      } catch (error) {
+        rejectBody(error instanceof Error ? error : new Error(String(error)))
+      }
+    })
+    req.on('error', rejectBody)
+  })
+}
+
+/**
+ * Handle one watch call: fence, read the cwd, open a window unless it is already
+ * there.
+ *
+ * POST only. This is the one route that starts something, and a GET that spawns
+ * processes would be fired by every prefetcher and retry in the path.
+ */
+async function handleWatch(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: RouteDeps,
+): Promise<void> {
+  const method = req.method ?? 'GET'
+  if (method !== 'POST') {
+    sendJson(res, 405, errorBody(HUNK_ERROR.methodNotAllowed, `${method} is not allowed on ${HUNK_WATCH_PATH}`), method)
+    return
+  }
+  if (!isTrustedRequest(req, deps.trustedHosts())) {
+    sendJson(res, 403, errorBody(HUNK_ERROR.forbidden, 'this route only answers same-origin requests to this host'), method)
+    return
+  }
+
+  let body: unknown
+  try {
+    body = await readJsonBody(req)
+  } catch (error) {
+    sendJson(res, 400, errorBody(HUNK_ERROR.missingCwd, `unusable request body: ${error instanceof Error ? error.message : String(error)}`), method)
+    return
+  }
+  const cwd = typeof body === 'object' && body !== null ? (body as { cwd?: unknown }).cwd : undefined
+
+  try {
+    sendJson(res, 200, await startHunkWatch(typeof cwd === 'string' ? cwd : null, deps.watch), method)
+  } catch (error) {
+    if (error instanceof HunkRouteError) {
+      sendJson(res, error.status, errorBody(error.code, error.message), method)
+      return
+    }
+    console.error('[dsh-hunk] watch route failed:', error)
+    sendJson(
+      res,
+      500,
+      errorBody(HUNK_ERROR.internal, error instanceof Error ? error.message : String(error)),
+      method,
+    )
+  }
 }
 
 /**
@@ -143,22 +228,36 @@ export function apply(ctx: Context & HostContext): void {
   // deployment whose CLI is slower than the default budget.
   const configuredBin = process.env.DSH_HUNK_BIN?.trim()
   const configuredTimeout = Number(process.env.DSH_HUNK_TIMEOUT_MS)
+  const autostartOff = process.env.DSH_HUNK_AUTOSTART?.trim() === '0'
   const cli: HunkCliOptions = {
     bin: configuredBin !== undefined && configuredBin !== '' ? configuredBin : DEFAULT_HUNK_CLI_OPTIONS.bin,
     timeoutMs: Number.isFinite(configuredTimeout) && configuredTimeout > 0
       ? configuredTimeout
       : DEFAULT_HUNK_CLI_OPTIONS.timeoutMs,
   }
+  const watch: WatchStartOptions = { ...cli, autostart: !autostartOff }
 
+  const routeDeps = { trustedHosts: () => trustedHostsOf(ctx), cli, watch }
   ctx.effect(
     () => ctx.webServer.register({
       kind: 'exact',
       path: HUNK_STATE_PATH,
-      handler: (req, res) => handleState(req, res, { trustedHosts: () => trustedHostsOf(ctx), cli }),
+      handler: (req, res) => handleState(req, res, routeDeps),
     }),
     `dsh-hunk: ${HUNK_STATE_PATH}`,
   )
-  console.log(`[dsh-hunk] mounted ${HUNK_STATE_PATH} (hunk bin: ${cli.bin})`)
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: HUNK_WATCH_PATH,
+      handler: (req, res) => handleWatch(req, res, routeDeps),
+    }),
+    `dsh-hunk: ${HUNK_WATCH_PATH}`,
+  )
+  console.log(
+    `[dsh-hunk] mounted ${HUNK_STATE_PATH} and ${HUNK_WATCH_PATH} `
+    + `(hunk bin: ${cli.bin}; automatic window opening: ${autostartOff ? 'off' : 'on'})`,
+  )
 }
 
 /*
@@ -183,6 +282,13 @@ export {
   runHunkCli,
 } from './host/hunk-cli'
 export { isLoopbackHostname, isTrustedRequest } from './host/trust-fence'
+export {
+  buildWatchCommand,
+  clearWatchRegistry,
+  psSingleQuote,
+  startHunkWatch,
+} from './host/watch-start'
+export type { LaunchPlan, LaunchResult, WatchStartOptions } from './host/watch-start'
 export { fileNotes, groupNotes, hunkOfNote, overlaps, pathKey } from './shared/notes'
 export {
   LANGUAGE_EXTENSIONS,
@@ -216,6 +322,8 @@ export {
   HUNK_PATCH_PARAM,
   HUNK_REVIEW_COMMAND,
   HUNK_STATE_PATH,
+  HUNK_WATCH_COMMAND,
+  HUNK_WATCH_PATH,
 } from './shared/wire'
 export type {
   HunkErrorCode,
@@ -229,4 +337,6 @@ export type {
   HunkRouteResponse,
   HunkSessionSummary,
   HunkStatePayload,
+  HunkWatchAction,
+  HunkWatchPayload,
 } from './shared/wire'

@@ -103,7 +103,10 @@ Invoke-WebRequest -Headers @{ Host = '127.0.0.1:3080' } `
 |---|---|
 | 右侧栏"新建标签页"里没有「Hunk 评审」 | `lib/client.js` 没构建；或 tab 类型注册被拒（id / guide 条目 id 撞车）；看「设置 → 插件」的报错与浏览器控制台 |
 | 开了页面但一直「加载中」 | 会话 cwd 还没进 `sessions.list`（列表填好后会自动出现，无需重开）；真拿不到时 2 s 后会提示，点重试只是重新等一轮 |
-| tab 里写「没有检测到 live Hunk 会话」 | 终端没有 `hunk diff --watch`；或 **daemon 中途重启过**（先开的窗口掉注册：`hunk.exe` 还在，但 `hunk session list` 空）→ 在窗口里 Ctrl+C 后重新 `hunk diff --watch` |
+| tab 里写「没有检测到 live Hunk 会话」 | 终端没有 `hunk diff --watch`；或 **daemon 中途重启过**（先开的窗口掉注册：`hunk.exe` 还在，但 `hunk session list` 空）→ 在窗口里 Ctrl+C 后重新 `hunk diff --watch`。Windows 上 tab 会先自动开一个，见下三行 |
+| 没有自动开 Hunk 窗口 | 按顺序看 tab 上的提示：① 目录不在 Git 工作树里（`git rev-parse --show-toplevel`）；② 已经有本仓库的 live 会话；③ 自动开窗被 `DSH_HUNK_AUTOSTART=0` 关掉；④ 之前开的窗口刚退出，还在 10 分钟冷却里；⑤ 系统不是 Windows（返回 `unsupported`，命令要你自己跑） |
+| 自动开了窗口，但一直没出现会话 | 看一眼那个控制台窗口：它自己会报错（PATH 里没有 hunk、目录没有改动、daemon 起不来）。冷启动到注册本机实测 8–9 秒，tab 等 30 秒仍没有就换成「开了但没注册」的文案。窗口一闪而过通常是 `hunk` 不在宿主 PATH：设 `DSH_HUNK_BIN` |
+| 关掉自动开窗 | 宿主上设 `DSH_HUNK_AUTOSTART=0`（要重启 `dsh web`），tab 就只告诉你没会话 + 那条命令 |
 | 路由 404 / 返回 HTML | host 半没加载 → 重启 `dsh web` |
 | 路由 403 | 信任围栏：`Host` 不是回环 / 带了跨站标记 |
 | 展开 hunk 第一次很慢 | `?patches=1` 要给每个文件重建一份 patch；host 侧有 5 s TTL + 同键合并，刷新会丢缓存 |
