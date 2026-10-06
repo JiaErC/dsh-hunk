@@ -41,7 +41,7 @@
 - **cwd 从客户端会话列表 live 读**（`src/client/session-cwd.ts`）：`sessions.list`
   快照的 `byId[sessionId].cwd`，用 `useSyncExternalStore` 订阅，所以会话刚加载完
   cwd 出现时页面会自己跟上，不需要重开或重试。
-- **一条路由，两次读**：`src/index.ts` 只注册 `/dsh-hunk/state`。
+- **两条路由**：`/dsh-hunk/state`（只读，GET）与 `/dsh-hunk/watch`（开窗，POST）。
   - 默认（结构读）：`hunk session list --json` + `hunk session review --repo . --json
     --include-notes` 并发跑，合成一个 JSON envelope（`ok / cwd / sessions / matched /
     otherRepos / review / reviewError`）。
@@ -49,10 +49,51 @@
     `patches: { 文件路径 → 原始 unified diff 文本 }`。只有展开 hunk 或点复制时才请求，
     主机侧 5 秒 TTL + 同键合并，避免每次刷新都重建整份 patch；没有 live 会话时
     先用廉价的 `session list` 判掉，不去跑那条昂贵的命令。
+  - `POST /dsh-hunk/watch`（开窗，见下节）：`{ cwd }` 进去，`{ action, pid, command }`
+    出来。**只有它是 POST**——GET 会被预取和重试反复打到，一个会拉进程的 GET 是陷阱。
 - **没有 live 会话时**：路由照样 200，`matched: null`，页面显示
-  「先在终端运行 `cd <cwd> && hunk diff --watch`」并列出其它仓库的 live 窗口。
+  「先在终端运行 `cd <cwd> && hunk diff --watch`」并列出其它仓库的 live 窗口；
+  Windows 上还会先自动开一个（下一节）。
 - **两个「半」互相不认识**：它们只共享 `src/shared/` 里的纯类型与纯函数，因此
   client bundle 不需要任何 DSH 包（react 来自宿主的 module table）。
+
+## 自动打开 Hunk 窗口
+
+Git 仓库里没有本仓库的 live 会话时，tab 会**自动开一个 Hunk 窗口**，省掉"先自己去终端敲
+一条命令"这一步。判定与动作都在宿主（`src/host/watch-start.ts`）：
+
+1. 目录在 Git 工作树里吗（`git rev-parse --show-toplevel`）——不是就什么都不做；
+2. 已经有本仓库的 live 会话吗（`hunk session list --json` + 路径匹配）——有就不开；
+3. 这台机器之前开的那个还活着吗（pid 存活探测）——活着就不开第二个；
+4. 刚才开的那个已经退出了吗——**10 分钟内不再开**（你关窗口是决定，不是故障，
+   跟你的关闭动作打架最讨厌）；
+5. 都没问题才开，并记下 pid。一个宿主进程最多开 8 个，防呆。
+
+**为什么是"新控制台窗口"而不是后台子进程**：`hunk diff --watch` 明确拒绝没有交互终端的
+运行，实测原话是
+
+```
+hunk: `--watch` requires an interactive output terminal.
+Remove `--watch` when redirecting or piping Hunk's output.
+```
+
+而且此时**不会**注册任何会话——后台 detach 起一个 `--watch` 是白起。hunk 1.4.2 也没有
+无终端的替代入口（`hunk session` 只能查看/控制已存在的会话，`hunk diff` 没有
+`--serve`/`--browser`）。所以宿主在 Windows 上走
+`powershell Start-Process -PassThru`：它既给子进程一个真终端（新控制台窗口，你能看见、
+AI 写的注释也显示在那里），又能把 pid 报回来给第 3 步用。（`cmd /c start` 从无控制台的父
+进程里起是静默失败，实测无进程、无日志、无会话，所以没用它。）
+
+- **代价与预期**：窗口冷启动到注册需要几秒（本机实测 8–9 秒，hunk 要顺手拉起自己的
+  daemon），期间 tab 每 3 秒重读一次、最多等 30 秒，文案从「已为你打开…等待注册」变成
+  「开了但没注册上，看一眼那个窗口」。
+- **关掉自动开窗**：宿主上设 `DSH_HUNK_AUTOSTART=0`，tab 就不再自动开（只是告诉你没会话，
+  以及那条命令）；手动「打开 Hunk 窗口」按钮也会一起停用。
+- **只在这台机器上、只在这个目录里**：路由有自己的信任围栏（回环 Host 或
+  `trustedHosts` + 同源标记），argv 写死为 `diff --watch`，**目录只来自请求里的 cwd**
+  且必须是存在的绝对目录。这条路由是唯一有副作用的接口，放宽 `trustedHosts` 前先想清楚。
+- **非 Windows**：没有可用的新控制台启动方式，返回 `unsupported` 并把命令交给你手动跑——
+  不猜、不模拟终端。
 
 ## 界面
 
@@ -191,8 +232,9 @@ npm run preview       # 打印当前目录的 payload；npm run preview -- --jso
 
 ## 使用上的前提
 
-- 终端里先有 live Hunk 窗口：`cd <仓库> && hunk diff --watch`
-  （看某个提交：`hunk show <ref>`）；本 tab 读的就是这个窗口。
+- 终端里**可以**先有 live Hunk 窗口：`cd <仓库> && hunk diff --watch`
+  （看某个提交：`hunk show <ref>`）；本 tab 读的就是这个窗口。**Windows 上也可以什么都不做**：
+  Git 仓库里没有本仓库的 live 会话时，tab 会自己开一个（见「自动打开 Hunk 窗口」）。
 - **窗口必须还注册在 daemon 上**：`hunk session list` 要能列出它。daemon 中途重启过
   （`hunk daemon serve` 换过进程）时，先开的窗口会失去注册——症状是 `hunk.exe` 进程还在，
   但 `hunk session list` 报 `No active Hunk sessions`、tab 显示「没有检测到 live Hunk 会话」。

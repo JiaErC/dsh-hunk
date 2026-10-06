@@ -39,6 +39,14 @@
 - **构建包装器不得缩进 bundle body**：esbuild 的 minifier 把含换行的字符串打印成
   跨行模板字面量，缩进会被插进字符串值（`'\n'` → `'\n\t\t'`，症状是 shiki 返回的行
   莫名多出制表符）。`build.mjs` 的 `registerBundle` 因此把 body 原样插在零缩进处。
+- **自动拉起窗口只走「新控制台」**：`hunk diff --watch` 没有交互终端会直接拒绝
+  （`--watch requires an interactive output terminal`，而且不注册会话），所以宿主用
+  `powershell Start-Process -PassThru` 给它一个真终端并拿回 pid；**不要**改成
+  `spawn(..., { detached: true, stdio: 'ignore' })`——那正是被 hunk 拒绝的那种起法
+  （`cmd /c start` 从无控制台的父进程起也是静默失败：无进程、无日志、无会话）。触发它的
+  只有 `POST /dsh-hunk/watch` 一条路由（GET 会被预取与重试打到），argv 写死，带 pid 存活
+  判定、10 分钟冷却与每进程 8 次上限；`DSH_HUNK_AUTOSTART=0` 关闭。真开窗口的端到端用例
+  只在 `DSH_HUNK_TEST_WATCH=1` 时跑。
 - **生效路径要分清**：改 host 半（`src/index.ts` / `src/host/**`）→ 必须重启 `dsh web`；
   改 client 半（`src/client/**`）→ 浏览器硬刷新即可（不用重启宿主）。
 
