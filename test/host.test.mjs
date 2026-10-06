@@ -11,14 +11,22 @@
  * bundle — the same artifact the profile loads).
  */
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { rmSync } from 'node:fs'
+import { mkdtemp, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import {
+  DEFAULT_HUNK_CLI_OPTIONS,
   HUNK_ERROR,
   HUNK_PATCH_COMMAND,
   HunkRouteError,
   LANGUAGE_EXTENSIONS,
   TOKEN_FALLBACKS,
+  buildWatchCommand,
   clearPatchCache,
+  clearWatchRegistry,
   collectHunkPatches,
   collectHunkState,
   fileNotes,
@@ -28,6 +36,8 @@ import {
   isLoopbackHostname,
   isTrustedRequest,
   languageForPath,
+  psSingleQuote,
+  startHunkWatch,
   locationKey,
   matchSession,
   notesForDisplay,
@@ -39,6 +49,7 @@ import {
   readReview,
   readSessions,
   resolveRequestCwd,
+  runHunkCli,
   splitPatchHunks,
   toSplitRows,
 } from '../lib/index.js'
@@ -418,6 +429,213 @@ test('parsePatchesPayload refuses a structural payload and normalizes a patch on
     missing: ['c.ts'],
     error: null,
   })
+})
+
+/*
+ * The watch route's decision logic. Every launch is injected: these tests prove
+ * WHAT is decided and what would be spawned, without spawning anything — a test
+ * suite that opens console windows is a test suite nobody runs twice.
+ */
+
+/** The seams a watch test needs, with the happy path as the default. */
+function watchOptions(overrides = {}) {
+  const launches = []
+  return {
+    launches,
+    options: {
+      autostart: true,
+      platform: 'win32',
+      isRepo: async () => true,
+      listSessions: async () => [],
+      isAlive: () => false,
+      now: () => 1_000_000,
+      launch: async (plan) => {
+        launches.push(plan)
+        return { pid: 4242 }
+      },
+      ...overrides,
+    },
+  }
+}
+
+test('the watch command is the command a human can paste', () => {
+  assert.equal(buildWatchCommand('E:\\repo'), 'cd "E:\\repo" && hunk diff --watch')
+  // A deployment with its own binary gets its own binary in the copy.
+  assert.equal(buildWatchCommand('E:\\repo', 'C:\\tools\\hunk.exe'), 'cd "E:\\repo" && C:\\tools\\hunk.exe diff --watch')
+  // PowerShell literals: a quote is doubled, never escaped into a new command.
+  assert.equal(psSingleQuote("E:\\it's here"), "'E:\\it''s here'")
+})
+
+test('a repository with no live window gets one, once', async () => {
+  clearWatchRegistry()
+  const { options, launches } = watchOptions()
+  const first = await startHunkWatch(process.cwd(), options)
+  assert.equal(first.ok, true)
+  assert.equal(first.action, 'started')
+  assert.equal(first.pid, 4242)
+  assert.match(first.command, /hunk diff --watch/)
+  assert.deepEqual(launches, [{ cwd: process.cwd(), bin: 'hunk', args: ['diff', '--watch'] }])
+
+  // A second call must not open a second window: the pid is alive.
+  const alive = watchOptions({ isAlive: () => true })
+  const second = await startHunkWatch(process.cwd(), alive.options)
+  assert.equal(second.action, 'already-started')
+  assert.equal(second.pid, 4242)
+  assert.deepEqual(alive.launches, [])
+})
+
+test('a live session, a non-repository, a disabled switch and another platform each skip the launch', async () => {
+  clearWatchRegistry()
+  const live = watchOptions({
+    listSessions: async () => [{ sessionId: 's-1', cwd: process.cwd() }],
+  })
+  const liveAnswer = await startHunkWatch(process.cwd(), live.options)
+  assert.equal(liveAnswer.action, 'already-live')
+  assert.equal(liveAnswer.sessionId, 's-1')
+  assert.deepEqual(live.launches, [])
+
+  clearWatchRegistry()
+  const notRepo = watchOptions({ isRepo: async () => false })
+  assert.equal((await startHunkWatch(process.cwd(), notRepo.options)).action, 'not-a-repo')
+  assert.deepEqual(notRepo.launches, [])
+
+  clearWatchRegistry()
+  const disabled = watchOptions({ autostart: false })
+  const disabledAnswer = await startHunkWatch(process.cwd(), disabled.options)
+  assert.equal(disabledAnswer.action, 'disabled')
+  assert.equal(disabledAnswer.detail, 'DSH_HUNK_AUTOSTART=0')
+  assert.deepEqual(disabled.launches, [])
+
+  clearWatchRegistry()
+  const alien = watchOptions({ platform: 'linux' })
+  const alienAnswer = await startHunkWatch(process.cwd(), alien.options)
+  assert.equal(alienAnswer.action, 'unsupported')
+  assert.match(alienAnswer.detail, /linux/)
+  assert.deepEqual(alien.launches, [])
+})
+
+test('a window that exited is not reopened inside the cooldown, and a failure is reported', async () => {
+  clearWatchRegistry()
+  let clock = 1_000_000
+  const first = watchOptions({ now: () => clock })
+  assert.equal((await startHunkWatch(process.cwd(), first.options)).action, 'started')
+
+  // The user closed it a minute later: respect that instead of reopening.
+  clock += 60_000
+  const closed = watchOptions({ now: () => clock, isAlive: () => false })
+  const cooldown = await startHunkWatch(process.cwd(), closed.options)
+  assert.equal(cooldown.action, 'cooldown')
+  assert.equal(cooldown.pid, 4242)
+  assert.deepEqual(closed.launches, [])
+
+  // Past the cooldown, a crashed window heals by itself.
+  clock += 11 * 60_000
+  const later = watchOptions({ now: () => clock, isAlive: () => false })
+  assert.equal((await startHunkWatch(process.cwd(), later.options)).action, 'started')
+  assert.equal(later.launches.length, 1)
+
+  // A launcher that cannot report a pid is a failure with the reason attached.
+  clearWatchRegistry()
+  const broken = watchOptions({ launch: async () => ({ failed: 'no pid' }) })
+  const failed = await startHunkWatch(process.cwd(), broken.options)
+  assert.equal(failed.action, 'failed')
+  assert.equal(failed.detail, 'no pid')
+  assert.match(failed.command, /hunk diff --watch/)
+})
+
+test('the watch decision still validates the cwd', async () => {
+  await assert.rejects(
+    () => startHunkWatch(null, watchOptions().options),
+    (error) => error instanceof HunkRouteError && error.code === HUNK_ERROR.missingCwd,
+  )
+  await assert.rejects(
+    () => startHunkWatch(process.cwd() + '/no/such/dir', watchOptions().options),
+    (error) => error instanceof HunkRouteError && error.code === HUNK_ERROR.badCwd,
+  )
+})
+
+/** Whether a pid is still running (`kill 0` is the portable probe). */
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The end-to-end lane for the feature that starts something.
+ *
+ * Opt-in (`DSH_HUNK_TEST_WATCH=1`) because it opens a real console window and
+ * waits for hunk's own startup: it needs the installed CLI, a Git repository,
+ * and about ten seconds. Everything else about the watch path is unit-tested
+ * with injected seams; this is the lane that proves the seams match reality.
+ */
+test('live: the real launcher opens a window that registers', {
+  skip: process.platform !== 'win32'
+    ? 'the console launcher is Windows-only'
+    : (process.env.DSH_HUNK_TEST_WATCH === '1' ? false : 'set DSH_HUNK_TEST_WATCH=1 to spawn a real window'),
+}, async (t) => {
+  const repo = await mkdtemp(join(tmpdir(), 'dsh-hunk-watch-'))
+  const git = (args) => spawnSync('git', args, { cwd: repo, encoding: 'utf8' })
+  git(['init', '-q'])
+  git(['config', 'user.email', 'watch@example.com'])
+  git(['config', 'user.name', 'watch'])
+  await writeFile(join(repo, 'tracked.txt'), 'one\n', 'utf8')
+  git(['add', '.'])
+  git(['commit', '-qm', 'init'])
+  // Something to review, so the window has a changeset to show.
+  await writeFile(join(repo, 'tracked.txt'), 'one\ntwo\n', 'utf8')
+
+  clearWatchRegistry()
+  let pid
+  t.after(async () => {
+    // Close only the window we opened. The session daemon is shared — a real
+    // Hunk window of the user's may be attached to it — so it is left alone (it
+    // retires itself when idle).
+    if (pid !== undefined) {
+      try { process.kill(pid) } catch { /* already gone */ }
+      for (let attempt = 0; attempt < 20 && processAlive(pid); attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 250))
+      }
+    }
+    // A window that just closed may still hold its cwd for a moment.
+    try {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
+    } catch {
+      // A leftover temp directory is not a test failure.
+    }
+  })
+
+  const started = await startHunkWatch(repo, { autostart: true, timeoutMs: 30_000 })
+  if (started.action === 'failed' && /hunk|ENOENT/i.test(started.detail ?? '')) {
+    t.skip(`no usable Hunk CLI here: ${started.detail}`)
+    return
+  }
+  assert.equal(started.action, 'started', `unexpected action: ${JSON.stringify(started)}`)
+  pid = started.pid
+  assert.ok(Number.isInteger(pid) && pid > 0, 'the launcher must report the window pid')
+
+  // The window registers with the daemon a few seconds after it opens (hunk
+  // starts its own daemon on the way), so poll rather than assume.
+  let matched
+  for (let attempt = 0; attempt < 20 && matched === undefined; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 1500))
+    const listed = await runHunkCli(['session', 'list', '--json'], repo, { ...DEFAULT_HUNK_CLI_OPTIONS, timeoutMs: 30_000 })
+    matched = matchSession(readSessions(parseJson(listed.stdout)), repo)
+  }
+  assert.ok(matched !== undefined, 'the window we opened never registered a session')
+  assert.equal(matched.cwd !== undefined || matched.repoRoot !== undefined, true)
+
+  // And the session is reviewable, which is the whole point of opening it.
+  const review = await runHunkCli(
+    ['session', 'review', '--repo', '.', '--json', '--include-notes'],
+    repo,
+    { ...DEFAULT_HUNK_CLI_OPTIONS, timeoutMs: 30_000 },
+  )
+  assert.equal(review.ok, true)
+  assert.ok(readReview(parseJson(review.stdout)) !== undefined)
 })
 
 test('languageForPath maps the bundled grammars and refuses everything else', () => {

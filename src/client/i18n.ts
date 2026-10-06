@@ -56,6 +56,16 @@ export const zh = {
   'hunk.patchMissing': '这份 review 没有该文件的 patch 文本',
   'hunk.patchUnsupported': '宿主的 dsh-hunk 还没加载「变动读取」（需要重启 dsh web），重启后即可展开与复制',
   'hunk.copyUnsupported': '宿主未加载变动读取，暂时无法复制',
+  'watch.opening': '这个仓库还没有 live Hunk 会话，已为你打开一个 Hunk 窗口（新控制台），等它注册…',
+  'watch.slow': 'Hunk 窗口已打开，但还没注册上。看一眼那个控制台窗口：它在报错还是还开着？',
+  'watch.opened': '已经有一个 Hunk 窗口在跑，不用再开。',
+  'watch.cooldown': '之前自动打开的 Hunk 窗口已经退出了，10 分钟内不再自动打开（避免跟你的关闭动作打架）。',
+  'watch.disabled': '自动打开 Hunk 窗口被配置关掉了（宿主上设了 DSH_HUNK_AUTOSTART=0）。',
+  'watch.notRepo': '当前会话目录不在 Git 仓库里，没有可评审的改动，因此不自动打开 Hunk 窗口。',
+  'watch.unsupported': '这台系统没有可用的「新控制台」启动方式，请手动运行：',
+  'watch.failed': '打开 Hunk 窗口失败：',
+  'watch.open': '打开 Hunk 窗口',
+  'watch.pid': '进程 {pid}',
 } as const
 
 /** 本插件的文案键。 */
@@ -106,6 +116,16 @@ export const en: Record<HunkKey, string> = {
   'hunk.patchMissing': 'This review carries no patch text for the file',
   'hunk.patchUnsupported': 'This host has not loaded the patch read yet (restart dsh web), then hunks unfold and copy',
   'hunk.copyUnsupported': 'The host has not loaded the patch read, so this hunk cannot be copied yet',
+  'watch.opening': 'No live Hunk session for this repository — opening a Hunk window (new console), waiting for it to register…',
+  'watch.slow': 'The Hunk window opened but never registered. Check that console window: is it reporting an error?',
+  'watch.opened': 'A Hunk window is already running, so there is nothing to open.',
+  'watch.cooldown': 'The window opened automatically earlier has exited; not reopening for 10 minutes, so a manual close stays closed.',
+  'watch.disabled': 'Automatic window opening is switched off (DSH_HUNK_AUTOSTART=0 on the host).',
+  'watch.notRepo': 'This session directory is not a git checkout, so there is nothing to review and no window is opened.',
+  'watch.unsupported': 'This platform has no "new console" launcher available; run it yourself:',
+  'watch.failed': 'Could not open a Hunk window:',
+  'watch.open': 'Open a Hunk window',
+  'watch.pid': 'process {pid}',
 }
 
 /**

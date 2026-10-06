@@ -17,6 +17,18 @@
 export const HUNK_STATE_PATH = '/dsh-hunk/state'
 
 /**
+ * Browser-facing route that opens a Hunk review window for a cwd.
+ *
+ * A POST, because it starts something: a review window is a process, and a GET
+ * that spawns processes is a trap for every cache, prefetcher, and retry in the
+ * path. The tab calls it when it finds no live window for a repository.
+ */
+export const HUNK_WATCH_PATH = '/dsh-hunk/watch'
+
+/** The command a human can run to open the window by hand. */
+export const HUNK_WATCH_COMMAND = 'hunk diff --watch'
+
+/**
  * Query parameter that switches the route from the structural read to the
  * patch read (`1` / `true`). Anything else keeps the structural read.
  */
@@ -169,7 +181,49 @@ export interface HunkErrorPayload {
   error: { code: string; message: string }
 }
 
-export type HunkRouteResponse = HunkStatePayload | HunkPatchesPayload | HunkErrorPayload
+/**
+ * What the watch route did, or refused to do.
+ *
+ * Every outcome is a normal answer (`ok: true`): "no window was needed", "this
+ * repository is not a git checkout", "the platform has no console launcher" are
+ * facts the tab renders as copy, not errors. Only a broken request or a broken
+ * Hunk installation travels as `ok: false`.
+ */
+export type HunkWatchAction =
+  /** A window was launched just now. */
+  | 'started'
+  /** A live window for this repository already existed. */
+  | 'already-live'
+  /** A window this plugin launched for this cwd is still running. */
+  | 'already-started'
+  /** A window this plugin launched has exited recently; not reopening yet. */
+  | 'cooldown'
+  /** Automatic opening is switched off by configuration. */
+  | 'disabled'
+  /** The cwd is not inside a git work tree. */
+  | 'not-a-repo'
+  /** This platform has no way to hand Hunk an interactive terminal. */
+  | 'unsupported'
+  /** The launcher itself failed. */
+  | 'failed'
+
+/** A successful watch call. */
+export interface HunkWatchPayload {
+  ok: true
+  action: HunkWatchAction
+  /** The cwd the window would review (absolute, resolved by the host). */
+  cwd: string
+  /** The live window that made this call unnecessary, when there was one. */
+  sessionId?: string
+  /** The process this plugin started (now, or on an earlier call). */
+  pid?: number
+  /** The command a human can run instead — always present, always safe to show. */
+  command: string
+  /** One line of detail for `failed` / `unsupported` / `cooldown`. */
+  detail?: string
+}
+
+export type HunkRouteResponse = HunkStatePayload | HunkPatchesPayload | HunkWatchPayload | HunkErrorPayload
 
 /** Error codes this route emits (the browser switches copy on them). */
 export const HUNK_ERROR = {

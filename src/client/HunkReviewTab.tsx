@@ -18,6 +18,7 @@ import type {
   HunkReviewPayload,
   HunkSessionSummary,
   HunkStatePayload,
+  HunkWatchAction,
 } from '../shared/wire'
 import { fileNotes, groupNotes, pathKey } from '../shared/notes'
 import { languageForPath, type HighlightToken, type HighlightedLine } from '../shared/languages'
@@ -31,7 +32,7 @@ import {
   type SplitCell,
   type SplitRow,
 } from '../shared/patch'
-import { HunkClientError, fetchHunkPatches, fetchHunkState, isAbort, messageOf } from './api'
+import { HunkClientError, fetchHunkPatches, fetchHunkState, isAbort, messageOf, requestHunkWatch } from './api'
 import { useSessionCwd } from './session-cwd'
 import { useTranslate, type Translate } from './i18n'
 import { styles, token } from './styles'
@@ -517,6 +518,63 @@ function SessionStrip(props: {
   )
 }
 
+/** What the tab says about the window it tried to open. */
+function watchCopy(t: Translate, watch: WatchNotice): string {
+  switch (watch.action) {
+    case 'started':
+      return watch.gaveUp ? t('watch.slow') : t('watch.opening')
+    case 'already-live':
+    case 'already-started':
+      return t('watch.opened')
+    case 'cooldown':
+      return t('watch.cooldown')
+    case 'disabled':
+      return t('watch.disabled')
+    case 'not-a-repo':
+      return t('watch.notRepo')
+    case 'unsupported':
+      return t('watch.unsupported')
+    case 'failed':
+      return t('watch.failed')
+    default:
+      return t('watch.opening')
+  }
+}
+
+/**
+ * The window-opening notice.
+ *
+ * Only shown while it has something to say: a window is being opened, or the
+ * host declined/failed and the user can act. `already-live`/`already-started`
+ * are deliberately quiet — a window that exists is not news on every refresh.
+ */
+function WatchNoticeView(props: {
+  t: Translate
+  watch: WatchNotice
+  onOpen: () => void
+}): ReactNode {
+  const { t, watch, onOpen } = props
+  if (watch.status === 'idle') return null
+  const loud = watch.action === 'failed' || watch.action === 'unsupported' || watch.action === 'cooldown'
+  return (
+    <div style={(loud ? styles.watchLoud : styles.watch) as CSSProperties}>
+      <div>{watchCopy(t, watch)}</div>
+      {watch.pid !== undefined && watch.action === 'started' && (
+        <div style={styles.muted as CSSProperties}>{t('watch.pid', { pid: watch.pid })}</div>
+      )}
+      {watch.detail !== undefined && <div style={styles.muted as CSSProperties}>{watch.detail}</div>}
+      {watch.command !== undefined && watch.action !== 'started' && (
+        <CommandLine t={t} text={watch.command} />
+      )}
+      {loud && (
+        <div style={{ marginTop: 8 }}>
+          <Button label={t('watch.open')} onClick={onOpen} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** The "no live session" state: exactly what to run, in which directory. */
 function EmptyState({ t, data }: { t: Translate; data: HunkStatePayload }): ReactNode {
   return (
@@ -568,6 +626,34 @@ function FailureBlock(props: {
 /** How long a missing cwd is waited on before it is reported as a failure. */
 const CWD_GRACE_MS = 2000
 
+/** How often the tab re-reads while a freshly opened window registers. */
+const WATCH_POLL_MS = 3000
+
+/**
+ * How many polls a fresh window gets before the tab stops waiting.
+ *
+ * A cold window needed 8–9 s on the development machine (hunk starts its own
+ * daemon), so ten polls is generous without leaving a timer running forever.
+ */
+const WATCH_POLL_TRIES = 10
+
+/** The state of this tab's window-opening attempt. */
+interface WatchNotice {
+  status: 'idle' | 'waiting' | 'settled'
+  /** The host's verdict; absent for a transport failure. */
+  action?: HunkWatchAction
+  /** The command to paste when the host could not open a window itself. */
+  command?: string
+  /** One line from the host (why it refused, or why it failed). */
+  detail?: string
+  /** The process the host started, on the way to a live session. */
+  pid?: number
+  /** True once the polling budget ran out with no session in sight. */
+  gaveUp?: boolean
+}
+
+const IDLE_WATCH: WatchNotice = { status: 'idle' }
+
 /**
  * The tab body's props: the framework's per-tab reader plus what this plugin
  * injects through the body registration (`ctx`, `sessionId`). Typed
@@ -600,6 +686,10 @@ export function HunkReviewTab({ ctx, sessionId, useTabInfo }: HunkTabProps): Rea
   const [patchState, setPatchState] = useState<PatchState>(IDLE_PATCHES)
   /** True once the session list has had its grace period and still has no cwd. */
   const [cwdTimedOut, setCwdTimedOut] = useState(false)
+  /** This tab's window-opening attempt (idle until a read finds no window). */
+  const [watch, setWatch] = useState<WatchNotice>(IDLE_WATCH)
+  /** The cwd whose automatic attempt has already been made. */
+  const watchAttempted = useRef<string | null>(null)
   const requestRef = useRef<AbortController | null>(null)
   const runRef = useRef(0)
   /** The in-flight or settled patch read, tagged with the cwd it belongs to. */
@@ -696,6 +786,61 @@ export function HunkReviewTab({ ctx, sessionId, useTabInfo }: HunkTabProps): Rea
   // Abort whatever is in flight when the tab body unmounts.
   useEffect(() => () => { requestRef.current?.abort() }, [])
 
+  /** Ask the host to open a review window, once per cwd. */
+  const openWatchWindow = useCallback(async (target: string) => {
+    setWatch({ status: 'waiting' })
+    try {
+      const result = await requestHunkWatch(target)
+      setWatch({
+        // `started` means a window is coming up: keep re-reading until it
+        // registers. Every other verdict is final — nothing to wait for.
+        status: result.action === 'started' ? 'waiting' : 'settled',
+        action: result.action,
+        command: result.command,
+        ...(result.detail === undefined ? {} : { detail: result.detail }),
+        ...(result.pid === undefined ? {} : { pid: result.pid }),
+      })
+    } catch (error) {
+      setWatch({
+        status: 'settled',
+        action: 'failed',
+        command: `cd "${target}" && hunk diff --watch`,
+        detail: messageOf(error),
+      })
+    }
+  }, [])
+
+  // No live window for this repository: open one, automatically, the first time
+  // this cwd answers that way. The host is the one that decides whether opening
+  // is appropriate (git checkout, autostart switch, an existing window, a
+  // window it opened before), so this stays a single unconditional call.
+  useEffect(() => {
+    if (data === null || cwd === undefined) return
+    if (data.matched !== null) {
+      // A window exists: whatever we did before is settled and no longer news.
+      setWatch(current => (current.status === 'idle' ? current : IDLE_WATCH))
+      return
+    }
+    if (watchAttempted.current === cwd) return
+    watchAttempted.current = cwd
+    void openWatchWindow(cwd)
+  }, [data, cwd, openWatchWindow])
+
+  // While a fresh window registers (seconds, not milliseconds), re-read instead
+  // of leaving the user on "no live session" for a started window.
+  useEffect(() => {
+    if (watch.status !== 'waiting' || !visible) return
+    let tries = 0
+    const timer = setInterval(() => {
+      tries += 1
+      refresh()
+      if (tries >= WATCH_POLL_TRIES) {
+        setWatch(current => (current.status === 'waiting' ? { ...current, status: 'settled', gaveUp: true } : current))
+      }
+    }, WATCH_POLL_MS)
+    return () => { clearInterval(timer) }
+  }, [watch.status, visible, refresh])
+
   /** One retry action for both failure kinds: wait for cwd again, or re-read. */
   const retry = useCallback(() => {
     if (cwd === undefined) {
@@ -733,6 +878,18 @@ export function HunkReviewTab({ ctx, sessionId, useTabInfo }: HunkTabProps): Rea
         )}
         {!cwdFailed && failure === null && data === null && (
           <p style={styles.muted as CSSProperties}>{t('loading')}</p>
+        )}
+        {/*
+          The report of the window this tab tried to open, above the state it
+          explains: "no live session" and "a window is starting" are the same
+          screen, and the second one is the one that is about to change.
+        */}
+        {!cwdFailed && data !== null && data.matched === null && (
+          <WatchNoticeView
+            t={t}
+            watch={watch}
+            onOpen={() => { if (cwd !== undefined) void openWatchWindow(cwd) }}
+          />
         )}
         {!cwdFailed && data !== null && review === null && <EmptyState t={t} data={data} />}
         {!cwdFailed && data !== null && review !== null && (

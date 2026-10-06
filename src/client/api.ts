@@ -8,8 +8,10 @@
 import {
   HUNK_PATCH_PARAM,
   HUNK_STATE_PATH,
+  HUNK_WATCH_PATH,
   type HunkRouteResponse,
   type HunkStatePayload,
+  type HunkWatchPayload,
 } from '../shared/wire'
 import { parsePatchesPayload, type PatchesReadResult } from '../shared/patch'
 
@@ -44,10 +46,18 @@ export function messageOf(error: unknown): string {
 async function requestRoute<T extends HunkRouteResponse>(
   url: string,
   signal?: AbortSignal,
+  payload?: unknown,
 ): Promise<T> {
   let response: Response
   try {
-    response = await fetch(url, { headers: { accept: 'application/json' }, signal })
+    response = await fetch(url, {
+      method: payload === undefined ? 'GET' : 'POST',
+      headers: payload === undefined
+        ? { accept: 'application/json' }
+        : { accept: 'application/json', 'content-type': 'application/json' },
+      ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
+      signal,
+    })
   } catch (error) {
     if (isAbort(error)) throw error
     throw new HunkClientError('network', messageOf(error))
@@ -98,4 +108,30 @@ export async function fetchHunkPatches(cwd: string, signal?: AbortSignal): Promi
     throw new HunkClientError('patch-read-unsupported', 'this host build does not answer the patch read')
   }
   return read
+}
+
+/**
+ * Ask the host to open a Hunk review window for this cwd.
+ *
+ * A POST: this is the one call that starts something. The host decides whether a
+ * window is needed at all (a live one, a git checkout, the switches), so the
+ * answer is an action to render, not a boolean.
+ * @param cwd - absolute session working directory.
+ * @param signal - aborts the request.
+ * @returns what the host did, or refused to do.
+ * @throws {HunkClientError} on a transport failure, a route error envelope, or a
+ *   host build that predates this route (code `watch-unsupported`).
+ */
+export async function requestHunkWatch(cwd: string, signal?: AbortSignal): Promise<HunkWatchPayload> {
+  const body = await requestRoute<HunkRouteResponse>(HUNK_WATCH_PATH, signal, { cwd })
+  if (!isWatchPayload(body)) {
+    throw new HunkClientError('watch-unsupported', 'this host build does not answer the watch route')
+  }
+  return body
+}
+
+/** Whether a route answer is the watch payload rather than one of the reads. */
+function isWatchPayload(body: HunkRouteResponse): body is HunkWatchPayload {
+  const action = (body as { action?: unknown }).action
+  return body.ok === true && typeof action === 'string' && typeof (body as { cwd?: unknown }).cwd === 'string'
 }
