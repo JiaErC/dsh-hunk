@@ -42,9 +42,13 @@
   快照的 `byId[sessionId].cwd`，用 `useSyncExternalStore` 订阅，所以会话刚加载完
   cwd 出现时页面会自己跟上，不需要重开或重试。
 - **两条路由**：`/dsh-hunk/state`（只读，GET）与 `/dsh-hunk/watch`（开窗，POST）。
-  - 默认（结构读）：`hunk session list --json` + `hunk session review --repo . --json
-    --include-notes` 并发跑，合成一个 JSON envelope（`ok / cwd / sessions / matched /
-    otherRepos / review / reviewError`）。
+  - 默认（结构读）：先 `hunk session list --json`，**只有匹配到本仓库的窗口时才**再跑
+    `hunk session review --repo . --json --include-notes`。顺序是被一个真实截图纠正的：
+    选择器匹配不到任何东西时，这条 review 命令会以
+    `hunk: protocol-validation-failed` 失败（三种仓库实测一字不差——有提交的、没提交的、
+    报障那个），那只是这个 hunk 版本表达「没有匹配的 live 会话」的方式，把它当正文显示等于
+    让读者以为坏了；而且没有窗口时本来也无从 review，那一次 hunk 启动纯属白跑。
+    合成一个 JSON envelope（`ok / cwd / sessions / matched / otherRepos / review / reviewError`）。
   - `?patches=1`（变动读，按需）：同一条命令加 `--include-patch`，返回
     `patches: { 文件路径 → 原始 unified diff 文本 }`。只有展开 hunk 或点复制时才请求，
     主机侧 5 秒 TTL + 同键合并，避免每次刷新都重建整份 patch；没有 live 会话时
@@ -63,11 +67,18 @@ Git 仓库里没有本仓库的 live 会话时，tab 会**自动开一个 Hunk �
 一条命令"这一步。判定与动作都在宿主（`src/host/watch-start.ts`）：
 
 1. 目录在 Git 工作树里吗（`git rev-parse --show-toplevel`）——不是就什么都不做；
-2. 已经有本仓库的 live 会话吗（`hunk session list --json` + 路径匹配）——有就不开；
-3. 这台机器之前开的那个还活着吗（pid 存活探测）——活着就不开第二个；
-4. 刚才开的那个已经退出了吗——**10 分钟内不再开**（你关窗口是决定，不是故障，
+2. 已经有本仓库的 live 会话吗（`hunk session list --json` + 路径匹配，**子目录也算**）——有就不开；
+3. 之前开的那个还活着吗——**pid 必须仍是一个 hunk 进程**：Windows 会复用 pid，只探"存活"
+   会把别人的进程当成自己的窗口（真实症状就是「有个窗口在跑」和「没有 live 会话」同时出现）；
+4. 活着、且开出来不到 30 秒——那是**还在注册**，等它；
+5. 活着、已超过 30 秒、`session list` 里仍然没有它——**它掉注册了**（daemon 中途被换掉就会
+   这样：窗口还在，daemon 永远不再认它）：**另开一个**把它替掉，同一目录 5 分钟内最多替一次；
+6. 死了（或 pid 已被复用）——10 分钟内不再开（你关窗口是决定，不是故障，
    跟你的关闭动作打架最讨厌）；
-5. 都没问题才开，并记下 pid。一个宿主进程最多开 8 个，防呆。
+7. 都没问题才开，并记下 pid。一个宿主进程最多开 8 个，防呆。
+
+「打开 Hunk 窗口」按钮只在需要你动手时出现（冷却中 / 掉注册 / 失败 / 等到超时），而且
+**按钮不受冷却限制**——你明确要开，宿主就不跟你争；git、平台、已存在的会话这些判定照旧。
 
 **为什么是"新控制台窗口"而不是后台子进程**：`hunk diff --watch` 明确拒绝没有交互终端的
 运行，实测原话是
