@@ -148,9 +148,15 @@ async function handleWatch(
     return
   }
   const cwd = typeof body === 'object' && body !== null ? (body as { cwd?: unknown }).cwd : undefined
+  // An explicit click may skip the cooldowns: the user asking for a window is a
+  // decision the host should not argue with (the safety rules still apply).
+  const force = typeof body === 'object' && body !== null && (body as { force?: unknown }).force === true
 
   try {
-    sendJson(res, 200, await startHunkWatch(typeof cwd === 'string' ? cwd : null, deps.watch), method)
+    sendJson(res, 200, await startHunkWatch(
+      typeof cwd === 'string' ? cwd : null,
+      force ? { ...deps.watch, force: true } : deps.watch,
+    ), method)
   } catch (error) {
     if (error instanceof HunkRouteError) {
       sendJson(res, error.status, errorBody(error.code, error.message), method)
@@ -285,6 +291,7 @@ export { isLoopbackHostname, isTrustedRequest } from './host/trust-fence'
 export {
   buildWatchCommand,
   clearWatchRegistry,
+  isHunkProcess,
   psSingleQuote,
   startHunkWatch,
 } from './host/watch-start'

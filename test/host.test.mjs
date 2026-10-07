@@ -35,6 +35,7 @@ import {
   hunkOfNote,
   isLoopbackHostname,
   isTrustedRequest,
+  isHunkProcess,
   languageForPath,
   psSingleQuote,
   startHunkWatch,
@@ -438,7 +439,7 @@ test('parsePatchesPayload refuses a structural payload and normalizes a patch on
  */
 
 /** The seams a watch test needs, with the happy path as the default. */
-function watchOptions(overrides = {}) {
+function watchOptions({ pid = 4242, ...overrides } = {}) {
   const launches = []
   return {
     launches,
@@ -448,10 +449,14 @@ function watchOptions(overrides = {}) {
       isRepo: async () => true,
       listSessions: async () => [],
       isAlive: () => false,
+      // Injected, because the real probe resolves the pid's image name through
+      // `tasklist`: a test that reached it would be asking about this machine's
+      // process table.
+      isOurWindow: async () => true,
       now: () => 1_000_000,
       launch: async (plan) => {
         launches.push(plan)
-        return { pid: 4242 }
+        return { pid }
       },
       ...overrides,
     },
@@ -476,12 +481,100 @@ test('a repository with no live window gets one, once', async () => {
   assert.match(first.command, /hunk diff --watch/)
   assert.deepEqual(launches, [{ cwd: process.cwd(), bin: 'hunk', args: ['diff', '--watch'] }])
 
-  // A second call must not open a second window: the pid is alive.
-  const alive = watchOptions({ isAlive: () => true })
+  // A second call seconds later must not open a second window: the window is
+  // still inside its startup grace, so it is simply not registered YET.
+  const alive = watchOptions({ isAlive: () => true, now: () => 1_010_000 })
   const second = await startHunkWatch(process.cwd(), alive.options)
   assert.equal(second.action, 'already-started')
   assert.equal(second.pid, 4242)
   assert.deepEqual(alive.launches, [])
+})
+
+test('a window that lost its registration is replaced instead of blocking the review', async () => {
+  clearWatchRegistry()
+  let clock = 1_000_000
+  const first = watchOptions({ now: () => clock })
+  assert.equal((await startHunkWatch(process.cwd(), first.options)).action, 'started')
+
+  // The reported bug: the daemon was replaced, so the window we opened is up but
+  // absent from `session list`. The pid is alive and is a Hunk process — and the
+  // plugin used to answer "already-started" forever, leaving no way to review.
+  clock += 60_000
+  const stale = watchOptions({
+    pid: 7777,
+    now: () => clock,
+    isAlive: () => true,
+    listSessions: async () => [],
+  })
+  const replaced = await startHunkWatch(process.cwd(), stale.options)
+  assert.equal(replaced.action, 'stale')
+  assert.equal(replaced.replaced, true)
+  assert.equal(replaced.pid, 7777)
+  assert.equal(stale.launches.length, 1)
+
+  // Racing refreshes must not open a console each: a replacement is rate-limited.
+  clock += 60_000
+  const racing = watchOptions({
+    pid: 8888,
+    now: () => clock,
+    isAlive: () => true,
+    listSessions: async () => [],
+  })
+  const held = await startHunkWatch(process.cwd(), racing.options)
+  assert.equal(held.action, 'stale')
+  assert.equal(held.replaced, undefined)
+  assert.equal(held.pid, 7777)
+  assert.deepEqual(racing.launches, [])
+})
+
+test('an explicit click skips the cooldowns the automatic attempt respects', async () => {
+  clearWatchRegistry()
+  let clock = 1_000_000
+  const first = watchOptions({ now: () => clock })
+  assert.equal((await startHunkWatch(process.cwd(), first.options)).action, 'started')
+
+  // Inside the cooldown an automatic attempt is refused…
+  clock += 60_000
+  const closed = watchOptions({ now: () => clock, isAlive: () => false })
+  assert.equal((await startHunkWatch(process.cwd(), closed.options)).action, 'cooldown')
+
+  // …and the button still opens a window, because the user asked.
+  const forced = watchOptions({ pid: 9999, now: () => clock, isAlive: () => false, force: true })
+  const answer = await startHunkWatch(process.cwd(), forced.options)
+  assert.equal(answer.action, 'started')
+  assert.equal(answer.pid, 9999)
+  assert.equal(forced.launches.length, 1)
+})
+
+test('a reused pid is not mistaken for the window we opened', async () => {
+  clearWatchRegistry()
+  let clock = 1_000_000
+  const first = watchOptions({ now: () => clock })
+  assert.equal((await startHunkWatch(process.cwd(), first.options)).action, 'started')
+
+  // Alive, indistinguishable from our window by pid alone — but it is not Hunk.
+  clock += 60_000
+  const reused = watchOptions({
+    pid: 5150,
+    now: () => clock,
+    isAlive: () => true,
+    isOurWindow: async () => false,
+  })
+  const answer = await startHunkWatch(process.cwd(), reused.options)
+  // Inside the "a window exited recently" cooldown, a reused pid does not get a
+  // second window opened behind the user's back.
+  assert.equal(answer.action, 'cooldown')
+  assert.deepEqual(reused.launches, [])
+
+  clock += 11 * 60_000
+  const later = watchOptions({
+    pid: 5150,
+    now: () => clock,
+    isAlive: () => true,
+    isOurWindow: async () => false,
+  })
+  assert.equal((await startHunkWatch(process.cwd(), later.options)).action, 'started')
+  assert.equal(later.launches.length, 1)
 })
 
 test('a live session, a non-repository, a disabled switch and another platform each skip the launch', async () => {
@@ -636,6 +729,65 @@ test('live: the real launcher opens a window that registers', {
   )
   assert.equal(review.ok, true)
   assert.ok(readReview(parseJson(review.stdout)) !== undefined)
+})
+
+test('no window for the repository means no review read, and no error either', async (t) => {
+  // Reported from a real session: with no live window, the review command was
+  // still run and its failure — `hunk: protocol-validation-failed`, which is how
+  // this Hunk build spells "your selector matched nothing" — was printed in the
+  // tab as if something had gone wrong.
+  const repo = await mkdtemp(join(tmpdir(), 'dsh-hunk-nowindow-'))
+  t.after(() => { rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) })
+  const git = (args) => spawnSync('git', args, { cwd: repo, encoding: 'utf8' })
+  git(['init', '-q'])
+  git(['config', 'user.email', 'no-window@example.com'])
+  git(['config', 'user.name', 'no-window'])
+  await writeFile(join(repo, 'tracked.txt'), 'one\n', 'utf8')
+  git(['add', '.'])
+  git(['commit', '-qm', 'init'])
+  await writeFile(join(repo, 'tracked.txt'), 'one\ntwo\n', 'utf8')
+
+  let state
+  try {
+    state = await collectHunkState(repo, { bin: 'hunk', timeoutMs: 20_000 })
+  } catch (error) {
+    if (error instanceof HunkRouteError && error.code === HUNK_ERROR.cliMissing) {
+      t.skip('no Hunk CLI here')
+      return
+    }
+    throw error
+  }
+
+  assert.equal(state.matched, null)
+  assert.equal(state.review, null)
+  // The point of the fix: no hunk-internal string reaches the tab.
+  assert.equal(state.reviewError, null)
+  assert.ok(state.sessions.every(session => locationKey(session.cwd ?? '') !== locationKey(repo)))
+})
+
+test('a session launched in a subdirectory still matches its repository', () => {
+  const sessions = [{ sessionId: 's-1', cwd: 'E:\\repo', repoRoot: 'E:/repo' }]
+  assert.equal(matchSession(sessions, 'E:\\repo')?.sessionId, 's-1')
+  assert.equal(matchSession(sessions, 'E:\\repo\\src\\deep')?.sessionId, 's-1')
+  // Case and separators are the platform's business; a sibling directory is not
+  // inside the repository and must not match.
+  assert.equal(matchSession(sessions, 'E:\\repo-other'), undefined)
+  assert.equal(matchSession(sessions, 'E:\\elsewhere'), undefined)
+})
+
+test('the pid identity probe separates a Hunk window from a reused pid', async (t) => {
+  // The real probe, against this machine's process table: our own node process is
+  // not Hunk, and any running Hunk process is.
+  assert.equal(await isHunkProcess(process.pid), false)
+  assert.equal(await isHunkProcess(2 ** 30), false, 'a pid that cannot exist')
+
+  const listed = spawnSync('tasklist', ['/FI', 'IMAGENAME eq hunk.exe', '/FO', 'CSV', '/NH'], { encoding: 'utf8' })
+  const pid = /^"[^"]+","(\d+)"/.exec(listed.stdout.trim())?.[1]
+  if (pid === undefined) {
+    t.skip('no Hunk process is running on this machine right now')
+    return
+  }
+  assert.equal(await isHunkProcess(Number(pid)), true)
 })
 
 test('languageForPath maps the bundled grammars and refuses everything else', () => {

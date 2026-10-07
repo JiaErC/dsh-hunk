@@ -39,6 +39,27 @@ import {
 const LAUNCH_TIMEOUT_MS = 15_000
 
 /**
+ * How long a freshly opened window is trusted to still be registering.
+ *
+ * A cold window needs 8–9 s on the development machine, so this is deliberately
+ * generous. Inside it, a live pid with no session yet means "starting up";
+ * outside it, the same pair means the window is up but useless — it lost its
+ * registration when the daemon was replaced, which is the one failure a reader
+ * cannot see in `hunk session list` (the window is simply absent from it).
+ */
+const STARTUP_GRACE_MS = 30_000
+
+/**
+ * How long a cwd waits before a *replacement* window may be opened.
+ *
+ * The report that started this: a window that had lost its registration kept the
+ * plugin from opening a working one, so the review was unreachable for good.
+ * Replacing is the fix, but replacing on every refresh would fill the screen with
+ * consoles, so replacements are rate-limited per cwd.
+ */
+const REPLACE_COOLDOWN_MS = 5 * 60_000
+
+/**
  * How long a cwd is left alone after a window this plugin opened has exited.
  *
  * The user closing the window is a decision, not a fault: reopening it on the
@@ -54,6 +75,8 @@ const MAX_LAUNCHES = 8
 interface LaunchedWindow {
   pid: number
   startedAt: number
+  /** When this window replaced an earlier, unregistered one. */
+  replacedAt?: number
 }
 
 /** The plugin's memory of the windows it opened, per cwd key. */
@@ -97,6 +120,16 @@ export interface WatchStartOptions {
   isRepo?: (cwd: string) => Promise<boolean>
   /** Process liveness; defaults to a `process.kill(pid, 0)` probe. */
   isAlive?: (pid: number) => boolean
+  /** Process identity; defaults to resolving the pid's image name (pid reuse guard). */
+  isOurWindow?: (pid: number) => Promise<boolean>
+  /**
+   * Skip the "wait your turn" rules (cooldown, a window we think is still good).
+   *
+   * Set by the tab's explicit button: the user asking for a window is a decision
+   * this plugin should not argue with. The safety rules (git, platform, the
+   * autostart switch, an existing live session) still apply.
+   */
+  force?: boolean
   /** Clock, so a cooldown test needs no waiting. */
   now?: () => number
 }
@@ -182,6 +215,45 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Whether the process behind a pid is still the Hunk window we opened.
+ *
+ * Windows reuses pids, and a reused pid looks exactly like a window that is
+ * still running — the bug behind "有一个 Hunk 窗口在跑" shown next to "没有 live
+ * 会话", with no way out. So the pid is resolved to an image name before it is
+ * trusted.
+ * @param pid - the pid recorded at launch time.
+ * @returns true only when that pid is a Hunk process.
+ */
+export async function isHunkProcess(pid: number): Promise<boolean> {
+  if (!pidAlive(pid)) return false
+  return await new Promise<boolean>((resolveResult) => {
+    let out = ''
+    let settled = false
+    const finish = (value: boolean): void => {
+      if (settled) return
+      settled = true
+      resolveResult(value)
+    }
+    try {
+      const child = spawn('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      child.stdout.on('data', (chunk: Buffer) => { out += chunk.toString() })
+      child.on('error', () => finish(false))
+      child.on('close', () => {
+        // `"hunk.exe","4242",...` on a hit, an INFO line on a miss.
+        const name = /^"([^"]+)"/.exec(out.trim())?.[1]
+        finish(name !== undefined && name.toLowerCase().startsWith('hunk'))
+      })
+      child.on('error', () => finish(false))
+    } catch {
+      finish(false)
+    }
+  })
+}
+
 /** Ask git whether this directory is inside a work tree. */
 async function gitWorkTree(cwd: string): Promise<boolean> {
   return await new Promise<boolean>((resolveResult) => {
@@ -219,7 +291,7 @@ function answer(
   action: HunkWatchAction,
   cwd: string,
   command: string,
-  extra: { sessionId?: string; pid?: number; detail?: string } = {},
+  extra: { sessionId?: string; pid?: number; replaced?: boolean; detail?: string } = {},
 ): HunkWatchPayload {
   return {
     ok: true,
@@ -228,6 +300,7 @@ function answer(
     command,
     ...(extra.sessionId === undefined ? {} : { sessionId: extra.sessionId }),
     ...(extra.pid === undefined ? {} : { pid: extra.pid }),
+    ...(extra.replaced === undefined ? {} : { replaced: extra.replaced }),
     ...(extra.detail === undefined ? {} : { detail: extra.detail }),
   }
 }
@@ -256,6 +329,7 @@ export async function startHunkWatch(
   const platform = options.platform ?? process.platform
   const now = options.now ?? (() => Date.now())
   const isAlive = options.isAlive ?? pidAlive
+  const isOurWindow = options.isOurWindow ?? isHunkProcess
   const isRepo = options.isRepo ?? gitWorkTree
   const listSessions = options.listSessions ?? ((dir: string) => liveSessions(dir, cli))
 
@@ -278,10 +352,33 @@ export async function startHunkWatch(
   }
 
   const previous = launched.get(cwd)
-  if (previous !== undefined) {
-    if (isAlive(previous.pid)) return answer('already-started', cwd, command, { pid: previous.pid })
+  let replacing = false
+  if (previous !== undefined && options.force !== true) {
     const age = now() - previous.startedAt
-    if (age < COOLDOWN_MS) {
+    // A pid that is alive but is not a Hunk process is a reused pid: the window
+    // we opened is gone, whatever now answers to its number.
+    const stillOurs = isAlive(previous.pid) && await isOurWindow(previous.pid)
+    if (stillOurs && age <= STARTUP_GRACE_MS) {
+      // Inside the grace period this is simply a window that is still starting.
+      return answer('already-started', cwd, command, {
+        pid: previous.pid,
+        detail: `opened ${Math.round(age / 1000)} s ago and has not registered yet`,
+      })
+    }
+    if (stillOurs) {
+      // Up, older than any startup, and `session list` does not know it: it lost
+      // its registration (a replaced daemon is the usual cause) and will never
+      // answer a review again. Replace it — rate-limited.
+      const sinceReplacement = previous.replacedAt === undefined ? undefined : now() - previous.replacedAt
+      if (sinceReplacement !== undefined && sinceReplacement < REPLACE_COOLDOWN_MS) {
+        return answer('stale', cwd, command, {
+          pid: previous.pid,
+          detail: `the window from ${Math.round(age / 1000)} s ago is not registered; a replacement was opened ${Math.round(sinceReplacement / 1000)} s ago`,
+        })
+      }
+      replacing = true
+    } else if (age < COOLDOWN_MS) {
+      // It exited (or its pid was reused): respect a manual close for a while.
       return answer('cooldown', cwd, command, {
         pid: previous.pid,
         detail: `the window opened ${Math.round(age / 1000)} s ago has exited; not reopening yet`,
@@ -306,7 +403,19 @@ export async function startHunkWatch(
     return answer('failed', cwd, command, { detail: result.failed })
   }
 
+  const prior = launched.get(cwd)
   launchCount += 1
-  launched.set(cwd, { pid: result.pid, startedAt: now() })
-  return answer('started', cwd, command, { pid: result.pid })
+  launched.set(cwd, {
+    pid: result.pid,
+    startedAt: now(),
+    // Remember when this cwd last got a replacement, so replacements stay
+    // rate-limited across several window generations.
+    ...(replacing ? { replacedAt: now() } : prior?.replacedAt === undefined ? {} : { replacedAt: prior.replacedAt }),
+  })
+  return answer(replacing ? 'stale' : 'started', cwd, command, {
+    pid: result.pid,
+    ...(replacing
+      ? { replaced: true, detail: 'the earlier window had lost its registration; this one is fresh' }
+      : {}),
+  })
 }

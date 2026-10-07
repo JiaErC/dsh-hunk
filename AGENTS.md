@@ -44,9 +44,17 @@
   `powershell Start-Process -PassThru` 给它一个真终端并拿回 pid；**不要**改成
   `spawn(..., { detached: true, stdio: 'ignore' })`——那正是被 hunk 拒绝的那种起法
   （`cmd /c start` 从无控制台的父进程起也是静默失败：无进程、无日志、无会话）。触发它的
-  只有 `POST /dsh-hunk/watch` 一条路由（GET 会被预取与重试打到），argv 写死，带 pid 存活
-  判定、10 分钟冷却与每进程 8 次上限；`DSH_HUNK_AUTOSTART=0` 关闭。真开窗口的端到端用例
-  只在 `DSH_HUNK_TEST_WATCH=1` 时跑。
+  只有 `POST /dsh-hunk/watch` 一条路由（GET 会被预取与重试打到），argv 写死。
+  去重**不能只看 pid 存活**：必须确认真的是 hunk 进程（Windows 复用 pid，只探存活会让别人的
+  进程冒充我们的窗口，症状是「有个窗口在跑」和「没有 live 会话」同时出现）；「活着但不在
+  session list 里」= 掉注册（daemon 被换过就会这样），要**另开一个替掉**而不是永远答
+  already-started，替换按目录 5 分钟限一次。按钮来的 `force: true` 跳过冷却，跳不过
+  git / 平台 / 已有会话这些判定。`DSH_HUNK_AUTOSTART=0` 关闭；真开窗口的端到端用例只在
+  `DSH_HUNK_TEST_WATCH=1` 时跑。
+- **没有匹配的窗口就别跑 review 命令**：`hunk session review --repo .` 在选择器匹配不到时会以
+  `hunk: protocol-validation-failed` 失败（实测三种仓库一字不差：有提交的、没提交的、报障那个），
+  那只是它表达「没有 live 会话」的措辞；`collectHunkState` 因此先跑 `session list`，匹配不到就
+  直接返回 `review: null, reviewError: null`（由 tab 用自己的文案说明），匹配到了才跑第二条。
 - **生效路径要分清**：改 host 半（`src/index.ts` / `src/host/**`）→ 必须重启 `dsh web`；
   改 client 半（`src/client/**`）→ 浏览器硬刷新即可（不用重启宿主）。
 
