@@ -940,7 +940,14 @@ test('live: the patch read carries diff text per file, and caches it', async (t)
     return
   }
   const paths = Object.keys(payload.patches)
-  assert.ok(paths.length > 0)
+  if (paths.length === 0) {
+    // A registered window whose changeset is empty — hunk registers one even for
+    // a clean tree (`fileCount: 0`), and a window opened while the tree was clean
+    // keeps that empty publication. There is nothing to assert about patch text,
+    // and failing here would only report the developer's working tree.
+    t.skip('the live window for this repository reports no files to review')
+    return
+  }
   for (const path of paths) {
     assert.equal(typeof payload.patches[path], 'string')
     assert.ok(payload.patches[path].length > 0)
