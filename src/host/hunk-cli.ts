@@ -315,9 +315,14 @@ export function locationKey(value: string): string {
 
 /**
  * Pick the live window that belongs to `cwd`.
+ *
+ * Equality with the window's cwd or repo root is the common case; containment
+ * matters too, because a review started in a subdirectory is still the window
+ * for that repository, and `hunk session review --repo .` run from that
+ * subdirectory resolves to the same session.
  * @param sessions - live windows.
  * @param cwd - the session cwd both commands ran in.
- * @returns the window whose cwd or repo root is that directory.
+ * @returns the window whose cwd (or repo root) covers that directory.
  */
 export function matchSession(
   sessions: readonly HunkSessionSummary[],
@@ -326,7 +331,10 @@ export function matchSession(
   const wanted = locationKey(cwd)
   return sessions.find((session) => {
     const roots = [session.cwd, session.repoRoot].filter((value): value is string => value !== undefined)
-    return roots.some(root => locationKey(root) === wanted)
+    return roots.some((root) => {
+      const key = locationKey(root)
+      return key === wanted || wanted.startsWith(`${key}/`)
+    })
   })
 }
 
@@ -392,7 +400,19 @@ export async function resolveRequestCwd(value: string | null | undefined): Promi
 }
 
 /**
- * Run both Hunk commands for one session cwd and fold them into one payload.
+ * Read one review snapshot for a session cwd.
+ *
+ * The list read runs FIRST, and the review read only runs when it found a window
+ * for this repository. Two reasons, both learned from a real screenshot:
+ *
+ * - `hunk session review --repo .` answers a selector that matches nothing with
+ *   `hunk: protocol-validation-failed` — measured in three different repositories
+ *   (with commits, without commits, and the one that reported it), so it is
+ *   simply how this build spells "no live session". Showing that string in the
+ *   tab tells the reader nothing and looks like a crash.
+ * - With no window there is nothing to review, so the second command is a whole
+ *   Hunk startup spent to produce that non-answer.
+ *
  * @param cwdInput - raw `cwd` query parameter (absolute path).
  * @param options - executable and timeout; defaults to the plugin's.
  * @returns the state payload the tab renders.
@@ -403,10 +423,7 @@ export async function collectHunkState(
   options: HunkCliOptions = DEFAULT_HUNK_CLI_OPTIONS,
 ): Promise<HunkStatePayload> {
   const cwd = await resolveRequestCwd(cwdInput)
-  const [listRun, reviewRun] = await Promise.all([
-    runHunkCli(['session', 'list', '--json'], cwd, options),
-    runHunkCli(['session', 'review', '--repo', '.', '--json', '--include-notes'], cwd, options),
-  ])
+  const listRun = await runHunkCli(['session', 'list', '--json'], cwd, options)
 
   // The list read decides whether Hunk is usable at all: a broken CLI or an
   // aborted run is an error, while a plain "no windows" is a normal answer.
@@ -419,7 +436,23 @@ export async function collectHunkState(
   }
 
   const matched = matchSession(sessions, cwd)
+  if (matched === undefined) {
+    // No window for this repository: the tab says so itself, in its own words.
+    return {
+      ok: true,
+      cwd,
+      fetchedAt: new Date().toISOString(),
+      commands: { list: HUNK_LIST_COMMAND, review: HUNK_REVIEW_COMMAND },
+      sessions,
+      matched: null,
+      otherRepos: otherRepoRoots(sessions, undefined),
+      review: null,
+      reviewError: null,
+      capabilities: { patches: true },
+    }
+  }
 
+  const reviewRun = await runHunkCli(['session', 'review', '--repo', '.', '--json', '--include-notes'], cwd, options)
   let review: HunkReviewPayload | null = null
   let reviewError: { code: string; message: string } | null = null
   if (reviewRun.ok) {
@@ -430,10 +463,9 @@ export async function collectHunkState(
     } else {
       review = read
     }
-  } else if (matched === undefined) {
-    // Expected: no window for this repo, so `--repo .` cannot resolve a target.
-    reviewError = { code: HUNK_ERROR.noSession, message: brief(reviewRun.stderr) || 'no live Hunk session for this repository' }
   } else {
+    // A window matched but its review could not be read: that IS an error worth
+    // showing, because the user has a window and expects to see it.
     const failure = failureOf(reviewRun, HUNK_ERROR.reviewFailed, 'hunk session review')
     reviewError = { code: failure.code, message: failure.message }
   }

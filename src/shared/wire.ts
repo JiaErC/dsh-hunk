@@ -194,8 +194,14 @@ export type HunkWatchAction =
   | 'started'
   /** A live window for this repository already existed. */
   | 'already-live'
-  /** A window this plugin launched for this cwd is still running. */
+  /** A window this plugin launched for this cwd is still starting up. */
   | 'already-started'
+  /**
+   * A window this plugin launched is up but not registered with the daemon, so
+   * it can never answer a review: a fresh one was opened, or the replacement
+   * cooldown held it back for now.
+   */
+  | 'stale'
   /** A window this plugin launched has exited recently; not reopening yet. */
   | 'cooldown'
   /** Automatic opening is switched off by configuration. */
@@ -217,6 +223,8 @@ export interface HunkWatchPayload {
   sessionId?: string
   /** The process this plugin started (now, or on an earlier call). */
   pid?: number
+  /** True when this call opened a fresh window because an earlier one was stale. */
+  replaced?: boolean
   /** The command a human can run instead — always present, always safe to show. */
   command: string
   /** One line of detail for `failed` / `unsupported` / `cooldown`. */

@@ -523,8 +523,15 @@ function watchCopy(t: Translate, watch: WatchNotice): string {
   switch (watch.action) {
     case 'started':
       return watch.gaveUp ? t('watch.slow') : t('watch.opening')
-    case 'already-live':
+    case 'stale':
+      // Two different situations share this action: a fresh window was opened in
+      // place of one that had lost its registration, or the replacement cooldown
+      // held that back — and only the second one needs the reader to act.
+      if (watch.replaced !== true) return t('watch.stale')
+      return watch.gaveUp ? t('watch.slow') : t('watch.replaced')
     case 'already-started':
+      return watch.gaveUp ? t('watch.stale') : t('watch.registering')
+    case 'already-live':
       return t('watch.opened')
     case 'cooldown':
       return t('watch.cooldown')
@@ -541,6 +548,20 @@ function watchCopy(t: Translate, watch: WatchNotice): string {
   }
 }
 
+/** Whether the notice is waiting for a window that is still on its way up. */
+function watchWaiting(watch: WatchNotice): boolean {
+  if (watch.gaveUp === true) return false
+  if (watch.action === 'started' || watch.action === 'already-started') return true
+  return watch.action === 'stale' && watch.replaced === true
+}
+
+/** Whether the reader has something to do about it. */
+function watchActionable(watch: WatchNotice): boolean {
+  if (watch.gaveUp === true) return true
+  if (watch.action === 'failed' || watch.action === 'unsupported' || watch.action === 'cooldown') return true
+  return watch.action === 'stale' && watch.replaced !== true
+}
+
 /**
  * The window-opening notice.
  *
@@ -555,18 +576,19 @@ function WatchNoticeView(props: {
 }): ReactNode {
   const { t, watch, onOpen } = props
   if (watch.status === 'idle') return null
-  const loud = watch.action === 'failed' || watch.action === 'unsupported' || watch.action === 'cooldown'
+  const actionable = watchActionable(watch)
+  const waiting = watchWaiting(watch)
   return (
-    <div style={(loud ? styles.watchLoud : styles.watch) as CSSProperties}>
+    <div style={(actionable ? styles.watchLoud : styles.watch) as CSSProperties}>
       <div>{watchCopy(t, watch)}</div>
-      {watch.pid !== undefined && watch.action === 'started' && (
+      {watch.pid !== undefined && waiting && (
         <div style={styles.muted as CSSProperties}>{t('watch.pid', { pid: watch.pid })}</div>
       )}
       {watch.detail !== undefined && <div style={styles.muted as CSSProperties}>{watch.detail}</div>}
-      {watch.command !== undefined && watch.action !== 'started' && (
+      {watch.command !== undefined && !waiting && (
         <CommandLine t={t} text={watch.command} />
       )}
-      {loud && (
+      {actionable && (
         <div style={{ marginTop: 8 }}>
           <Button label={t('watch.open')} onClick={onOpen} />
         </div>
@@ -648,6 +670,8 @@ interface WatchNotice {
   detail?: string
   /** The process the host started, on the way to a live session. */
   pid?: number
+  /** True when the host opened a fresh window because an earlier one was stale. */
+  replaced?: boolean
   /** True once the polling budget ran out with no session in sight. */
   gaveUp?: boolean
 }
@@ -786,20 +810,27 @@ export function HunkReviewTab({ ctx, sessionId, useTabInfo }: HunkTabProps): Rea
   // Abort whatever is in flight when the tab body unmounts.
   useEffect(() => () => { requestRef.current?.abort() }, [])
 
-  /** Ask the host to open a review window, once per cwd. */
-  const openWatchWindow = useCallback(async (target: string) => {
+  /**
+   * Ask the host to open a review window.
+   *
+   * `force` is for the explicit button: the automatic attempt respects the
+   * host's cooldowns, a click does not (the user asking is a decision).
+   */
+  const openWatchWindow = useCallback(async (target: string, force = false) => {
     setWatch({ status: 'waiting' })
     try {
-      const result = await requestHunkWatch(target)
-      setWatch({
-        // `started` means a window is coming up: keep re-reading until it
-        // registers. Every other verdict is final — nothing to wait for.
-        status: result.action === 'started' ? 'waiting' : 'settled',
+      const result = await requestHunkWatch(target, force ? { force: true } : {})
+      const notice: WatchNotice = {
+        status: 'waiting',
         action: result.action,
         command: result.command,
         ...(result.detail === undefined ? {} : { detail: result.detail }),
         ...(result.pid === undefined ? {} : { pid: result.pid }),
-      })
+        ...(result.replaced === undefined ? {} : { replaced: result.replaced }),
+      }
+      // Poll only while a window is genuinely on its way up; every other verdict
+      // is final and the copy says what to do about it.
+      setWatch(watchWaiting(notice) ? notice : { ...notice, status: 'settled' })
     } catch (error) {
       setWatch({
         status: 'settled',
@@ -888,7 +919,7 @@ export function HunkReviewTab({ ctx, sessionId, useTabInfo }: HunkTabProps): Rea
           <WatchNoticeView
             t={t}
             watch={watch}
-            onOpen={() => { if (cwd !== undefined) void openWatchWindow(cwd) }}
+            onOpen={() => { if (cwd !== undefined) void openWatchWindow(cwd, true) }}
           />
         )}
         {!cwdFailed && data !== null && review === null && <EmptyState t={t} data={data} />}

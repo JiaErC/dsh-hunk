@@ -117,13 +117,21 @@ export async function fetchHunkPatches(cwd: string, signal?: AbortSignal): Promi
  * window is needed at all (a live one, a git checkout, the switches), so the
  * answer is an action to render, not a boolean.
  * @param cwd - absolute session working directory.
+ * @param options - `force` skips the cooldowns, for an explicit click.
  * @param signal - aborts the request.
  * @returns what the host did, or refused to do.
  * @throws {HunkClientError} on a transport failure, a route error envelope, or a
  *   host build that predates this route (code `watch-unsupported`).
  */
-export async function requestHunkWatch(cwd: string, signal?: AbortSignal): Promise<HunkWatchPayload> {
-  const body = await requestRoute<HunkRouteResponse>(HUNK_WATCH_PATH, signal, { cwd })
+export async function requestHunkWatch(
+  cwd: string,
+  options: { force?: boolean } = {},
+  signal?: AbortSignal,
+): Promise<HunkWatchPayload> {
+  const body = await requestRoute<HunkRouteResponse>(HUNK_WATCH_PATH, signal, {
+    cwd,
+    ...(options.force === true ? { force: true } : {}),
+  })
   if (!isWatchPayload(body)) {
     throw new HunkClientError('watch-unsupported', 'this host build does not answer the watch route')
   }
