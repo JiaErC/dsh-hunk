@@ -25,10 +25,12 @@ import {
   type HunkCliOptions,
 } from './host/hunk-cli'
 import { isTrustedRequest } from './host/trust-fence'
+import { reloadReviewInput, isReloadTarget } from './host/reload'
 import { startHunkWatch, type WatchStartOptions } from './host/watch-start'
 import {
   HUNK_ERROR,
   HUNK_PATCH_PARAM,
+  HUNK_RELOAD_PATH,
   HUNK_STATE_PATH,
   HUNK_WATCH_PATH,
   type HunkErrorPayload,
@@ -173,6 +175,62 @@ async function handleWatch(
 }
 
 /**
+ * Handle one reload call: fence, read the cwd and the target, steer the window.
+ *
+ * POST only, and only ever reached because someone clicked: it replaces what
+ * their Hunk window is showing.
+ */
+async function handleReload(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: RouteDeps,
+): Promise<void> {
+  const method = req.method ?? 'GET'
+  if (method !== 'POST') {
+    sendJson(res, 405, errorBody(HUNK_ERROR.methodNotAllowed, `${method} is not allowed on ${HUNK_RELOAD_PATH}`), method)
+    return
+  }
+  if (!isTrustedRequest(req, deps.trustedHosts())) {
+    sendJson(res, 403, errorBody(HUNK_ERROR.forbidden, 'this route only answers same-origin requests to this host'), method)
+    return
+  }
+
+  let body: unknown
+  try {
+    body = await readJsonBody(req)
+  } catch (error) {
+    sendJson(res, 400, errorBody(HUNK_ERROR.missingCwd, `unusable request body: ${error instanceof Error ? error.message : String(error)}`), method)
+    return
+  }
+  const record = typeof body === 'object' && body !== null ? body as { cwd?: unknown; target?: unknown } : {}
+  if (!isReloadTarget(record.target)) {
+    // The target reaches argv, so an unknown one is refused rather than forwarded.
+    sendJson(res, 400, errorBody(HUNK_ERROR.badCwd, 'target must be "working-tree" or "last-commit"'), method)
+    return
+  }
+
+  try {
+    sendJson(res, 200, await reloadReviewInput(
+      typeof record.cwd === 'string' ? record.cwd : null,
+      record.target,
+      deps.cli,
+    ), method)
+  } catch (error) {
+    if (error instanceof HunkRouteError) {
+      sendJson(res, error.status, errorBody(error.code, error.message), method)
+      return
+    }
+    console.error('[dsh-hunk] reload route failed:', error)
+    sendJson(
+      res,
+      500,
+      errorBody(HUNK_ERROR.internal, error instanceof Error ? error.message : String(error)),
+      method,
+    )
+  }
+}
+
+/**
  * Handle one read: fence, parse the query, run the Hunk commands, answer.
  *
  * Two reads share this path: the structural state (default) and the on-demand
@@ -260,8 +318,16 @@ export function apply(ctx: Context & HostContext): void {
     }),
     `dsh-hunk: ${HUNK_WATCH_PATH}`,
   )
+  ctx.effect(
+    () => ctx.webServer.register({
+      kind: 'exact',
+      path: HUNK_RELOAD_PATH,
+      handler: (req, res) => handleReload(req, res, routeDeps),
+    }),
+    `dsh-hunk: ${HUNK_RELOAD_PATH}`,
+  )
   console.log(
-    `[dsh-hunk] mounted ${HUNK_STATE_PATH} and ${HUNK_WATCH_PATH} `
+    `[dsh-hunk] mounted ${HUNK_STATE_PATH}, ${HUNK_WATCH_PATH} and ${HUNK_RELOAD_PATH} `
     + `(hunk bin: ${cli.bin}; automatic window opening: ${autostartOff ? 'off' : 'on'})`,
   )
 }
@@ -295,6 +361,8 @@ export {
   psSingleQuote,
   startHunkWatch,
 } from './host/watch-start'
+export { isReloadTarget, reloadArgvFor, reloadReviewInput } from './host/reload'
+export type { ReloadOptions } from './host/reload'
 export type { LaunchPlan, LaunchResult, WatchStartOptions } from './host/watch-start'
 export { fileNotes, groupNotes, hunkOfNote, overlaps, pathKey } from './shared/notes'
 export {
@@ -327,6 +395,8 @@ export {
   HUNK_ERROR,
   HUNK_LIST_COMMAND,
   HUNK_PATCH_PARAM,
+  HUNK_RELOAD_COMMANDS,
+  HUNK_RELOAD_PATH,
   HUNK_REVIEW_COMMAND,
   HUNK_STATE_PATH,
   HUNK_WATCH_COMMAND,
@@ -337,6 +407,8 @@ export type {
   HunkErrorPayload,
   HunkLineRange,
   HunkPatchesPayload,
+  HunkReloadPayload,
+  HunkReloadTarget,
   HunkReviewFile,
   HunkReviewHunk,
   HunkReviewNote,

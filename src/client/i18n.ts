@@ -69,6 +69,12 @@ export const zh = {
   'watch.failed': '打开 Hunk 窗口失败：',
   'watch.open': '打开 Hunk 窗口',
   'watch.pid': '进程 {pid}',
+  'target.lead': '这个 Hunk 窗口正在读：',
+  'target.unknown': '（窗口没报告标题）',
+  'target.workingTree': '让窗口读工作区',
+  'target.lastCommit': '让窗口读最近一次提交',
+  'target.switching': '切换中…',
+  'target.noSession': '没有可切换的 live 窗口（先让它自动开一个，或自己开）。',
 } as const
 
 /** 本插件的文案键。 */
@@ -132,6 +138,12 @@ export const en: Record<HunkKey, string> = {
   'watch.failed': 'Could not open a Hunk window:',
   'watch.open': 'Open a Hunk window',
   'watch.pid': 'process {pid}',
+  'target.lead': 'This Hunk window is reading:',
+  'target.unknown': '(the window reported no title)',
+  'target.workingTree': 'Read the working tree',
+  'target.lastCommit': 'Read the last commit',
+  'target.switching': 'Switching…',
+  'target.noSession': 'There is no live window to switch (let one be opened, or open one yourself).',
 }
 
 /**

@@ -29,6 +29,32 @@ export const HUNK_WATCH_PATH = '/dsh-hunk/watch'
 export const HUNK_WATCH_COMMAND = 'hunk diff --watch'
 
 /**
+ * Browser-facing route that tells the live window what to review.
+ *
+ * A review window reads ONE input — the working tree, or a revision — and this
+ * plugin's tab can only ever show what that window currently holds. So the two
+ * are a pair: the tab reads the window, and (on an explicit click) it can ask the
+ * window to switch inputs. Without that, a reader whose tree is clean after an
+ * agent committed its work sees "0 files" with no way to reach the commits.
+ */
+export const HUNK_RELOAD_PATH = '/dsh-hunk/reload'
+
+/**
+ * The two inputs this route can ask for.
+ *
+ * Deliberately an enum and never a ref of the caller's choosing: the value
+ * reaches a command line, and a free-form revision string is the one thing that
+ * would make that unsafe.
+ */
+export type HunkReloadTarget = 'working-tree' | 'last-commit'
+
+/** The two reload command lines, spelled once so the tab can show what ran. */
+export const HUNK_RELOAD_COMMANDS: Record<HunkReloadTarget, string> = {
+  'working-tree': 'hunk session reload --repo . -- diff',
+  'last-commit': 'hunk session reload --repo . -- show HEAD',
+}
+
+/**
  * Query parameter that switches the route from the structural read to the
  * patch read (`1` / `true`). Anything else keeps the structural read.
  */
@@ -231,7 +257,30 @@ export interface HunkWatchPayload {
   detail?: string
 }
 
-export type HunkRouteResponse = HunkStatePayload | HunkPatchesPayload | HunkWatchPayload | HunkErrorPayload
+export type HunkRouteResponse = HunkStatePayload | HunkPatchesPayload | HunkWatchPayload | HunkReloadPayload | HunkErrorPayload
+
+/**
+ * A successful reload call.
+ *
+ * `no-live-session` is a normal answer: there is no window to steer, and the tab
+ * already has copy for that (and the watch route for what to do about it).
+ */
+export interface HunkReloadPayload {
+  ok: true
+  action: 'reloaded' | 'no-live-session' | 'failed'
+  /** The cwd whose window was addressed. */
+  cwd: string
+  /** The input that was asked for. */
+  target: HunkReloadTarget
+  /** The session that switched inputs. */
+  sessionId?: string
+  /** The command line, so the reader can repeat it by hand. */
+  command: string
+  /** What the window now shows (`show HEAD`, `working tree`), when it said. */
+  title?: string
+  /** Why it failed, when it did. */
+  detail?: string
+}
 
 /** Error codes this route emits (the browser switches copy on them). */
 export const HUNK_ERROR = {

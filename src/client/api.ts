@@ -7,8 +7,11 @@
  */
 import {
   HUNK_PATCH_PARAM,
+  HUNK_RELOAD_PATH,
   HUNK_STATE_PATH,
   HUNK_WATCH_PATH,
+  type HunkReloadPayload,
+  type HunkReloadTarget,
   type HunkRouteResponse,
   type HunkStatePayload,
   type HunkWatchPayload,
@@ -142,4 +145,37 @@ export async function requestHunkWatch(
 function isWatchPayload(body: HunkRouteResponse): body is HunkWatchPayload {
   const action = (body as { action?: unknown }).action
   return body.ok === true && typeof action === 'string' && typeof (body as { cwd?: unknown }).cwd === 'string'
+}
+
+/**
+ * Ask the live window to read a different input.
+ *
+ * A write to the user's session, so it only ever runs because a button said so.
+ * The target is one of two names, never a revision from the UI: on the host it
+ * becomes argv.
+ * @param cwd - absolute session working directory.
+ * @param target - which input the window should read.
+ * @param signal - aborts the request.
+ * @returns what happened.
+ * @throws {HunkClientError} on a transport failure, a route error envelope, or a
+ *   host build that predates this route (code `reload-unsupported`).
+ */
+export async function requestHunkReload(
+  cwd: string,
+  target: HunkReloadTarget,
+  signal?: AbortSignal,
+): Promise<HunkReloadPayload> {
+  const body = await requestRoute<HunkRouteResponse>(HUNK_RELOAD_PATH, signal, { cwd, target })
+  if (!isReloadPayload(body)) {
+    throw new HunkClientError('reload-unsupported', 'this host build does not answer the reload route')
+  }
+  return body
+}
+
+/** Whether a route answer is the reload payload rather than one of the reads. */
+function isReloadPayload(body: HunkRouteResponse): body is HunkReloadPayload {
+  const record = body as { action?: unknown; target?: unknown }
+  return body.ok === true
+    && (record.action === 'reloaded' || record.action === 'no-live-session' || record.action === 'failed')
+    && typeof record.target === 'string'
 }

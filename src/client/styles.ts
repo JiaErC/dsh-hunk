@@ -385,4 +385,22 @@ export const styles = {
     color: token.text,
     fontSize: 12,
   },
+  /** What the live window is reading, plus the two buttons that change it. */
+  targetBar: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 8,
+    padding: '5px 9px',
+    borderRadius: 6,
+    background: token.tint,
+    fontSize: 11.5,
+  },
+  targetTitle: {
+    color: token.text,
+    fontFamily: token.mono,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
 } satisfies Record<string, CSSProperties>

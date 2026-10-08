@@ -12,6 +12,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type {
+  HunkReloadTarget,
   HunkReviewFile,
   HunkReviewHunk,
   HunkReviewNote,
@@ -32,7 +33,15 @@ import {
   type SplitCell,
   type SplitRow,
 } from '../shared/patch'
-import { HunkClientError, fetchHunkPatches, fetchHunkState, isAbort, messageOf, requestHunkWatch } from './api'
+import {
+  HunkClientError,
+  fetchHunkPatches,
+  fetchHunkState,
+  isAbort,
+  messageOf,
+  requestHunkReload,
+  requestHunkWatch,
+} from './api'
 import { useSessionCwd } from './session-cwd'
 import { useTranslate, type Translate } from './i18n'
 import { styles, token } from './styles'
@@ -402,6 +411,43 @@ function HunkView(props: {
   )
 }
 
+/**
+ * What the live window is reading, and the two ways to change it.
+ *
+ * The tab mirrors whatever input the window holds, so "0 files" can mean "the
+ * tree is clean" or "the window is reading an older thing" — and an agent that
+ * commits its work leaves the first case behind every round. `hunk session
+ * reload` is the command that switches inputs; it replaces what the reader is
+ * looking at, so it runs only from these clicks.
+ */
+function ReviewTargetBar(props: {
+  t: Translate
+  /** The window's own title, when it reported one. */
+  title: string | undefined
+  target: HunkReloadTarget | null
+  busy: boolean
+  onPick: (target: HunkReloadTarget) => void
+}): ReactNode {
+  const { t, title, target, busy, onPick } = props
+  return (
+    <div style={styles.targetBar as CSSProperties}>
+      <span style={styles.muted as CSSProperties}>{t('target.lead')}</span>
+      <span style={styles.targetTitle as CSSProperties}>{title ?? t('target.unknown')}</span>
+      <span style={styles.spacer as CSSProperties} />
+      <Button
+        label={busy && target === 'working-tree' ? t('target.switching') : t('target.workingTree')}
+        disabled={busy}
+        onClick={() => { onPick('working-tree') }}
+      />
+      <Button
+        label={busy && target === 'last-commit' ? t('target.switching') : t('target.lastCommit')}
+        disabled={busy}
+        onClick={() => { onPick('last-commit') }}
+      />
+    </div>
+  )
+}
+
 /** One reviewed file: collapsible header plus its hunks and notes. */
 function FileCard(props: {
   t: Translate
@@ -714,6 +760,8 @@ export function HunkReviewTab({ ctx, sessionId, useTabInfo }: HunkTabProps): Rea
   const [watch, setWatch] = useState<WatchNotice>(IDLE_WATCH)
   /** The cwd whose automatic attempt has already been made. */
   const watchAttempted = useRef<string | null>(null)
+  /** The input switch in flight, if any (a reload replaces what the window shows). */
+  const [switching, setSwitching] = useState<HunkReloadTarget | null>(null)
   const requestRef = useRef<AbortController | null>(null)
   const runRef = useRef(0)
   /** The in-flight or settled patch read, tagged with the cwd it belongs to. */
@@ -872,6 +920,36 @@ export function HunkReviewTab({ ctx, sessionId, useTabInfo }: HunkTabProps): Rea
     return () => { clearInterval(timer) }
   }, [watch.status, visible, refresh])
 
+  /**
+   * Switch what the live window reads.
+   *
+   * The only write this tab performs, and only because a button was clicked: it
+   * replaces the diff the reader's Hunk window is showing.
+   */
+  const switchTarget = useCallback(async (target: HunkReloadTarget) => {
+    if (cwd === undefined || switching !== null) return
+    setSwitching(target)
+    try {
+      const result = await requestHunkReload(cwd, target)
+      if (result.action === 'reloaded') {
+        // The window's publication changed underneath us: read it again.
+        refresh()
+      } else {
+        setFailure({
+          code: result.action,
+          message: result.detail ?? t('target.noSession'),
+        })
+      }
+    } catch (error) {
+      setFailure({
+        code: error instanceof HunkClientError ? error.code : 'unknown',
+        message: messageOf(error),
+      })
+    } finally {
+      setSwitching(null)
+    }
+  }, [cwd, switching, refresh, t])
+
   /** One retry action for both failure kinds: wait for cwd again, or re-read. */
   const retry = useCallback(() => {
     if (cwd === undefined) {
@@ -926,6 +1004,13 @@ export function HunkReviewTab({ ctx, sessionId, useTabInfo }: HunkTabProps): Rea
         {!cwdFailed && data !== null && review !== null && (
           <>
             <SessionStrip t={t} data={data} review={review} session={data.matched ?? undefined} />
+            <ReviewTargetBar
+              t={t}
+              title={review.title}
+              target={switching}
+              busy={switching !== null}
+              onPick={(next) => { void switchTarget(next) }}
+            />
             {review.files.length === 0 && (
               <p style={styles.muted as CSSProperties}>{t('empty.files')}</p>
             )}
