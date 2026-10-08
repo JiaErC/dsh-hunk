@@ -108,6 +108,9 @@ Invoke-WebRequest -Headers @{ Host = '127.0.0.1:3080' } `
 | 「已经有一个 Hunk 窗口在跑」和「没有 live 会话」同时出现 | 那个窗口**掉注册**了：daemon 中途被换过，窗口还活着但 daemon 不再认它（`session list` 里没有它）。现在插件会自己另开一个把它替掉（同一目录 5 分钟最多替一次）；也可以自己在那个控制台窗口 Ctrl+C 收掉旧的。别的仓库的窗口不受影响 |
 | 页面出现过 `no-live-session: hunk: protocol-validation-failed` | 那是 hunk 表达「选择器没匹配到任何 live 会话」的原话（三种仓库实测一字不差：有提交的、没提交的、报障那个）。现在没有匹配窗口时宿主不再跑那条 review 命令，也不再把它当正文显示（要重启 `dsh web` 生效） |
 | 仓库明明没改动却显示「这个仓库还没有 live Hunk 会话」 | hunk 会给"空改动"的仓库也注册会话（`fileCount: 0`），所以没窗口时这是正常状态；要评审就先改点东西 |
+| 有会话但「0 个文件」 | 先看页面上的「这个 Hunk 窗口正在读：…」。AI 每轮结束都提交，所以**工作区常常是干净的、想看的东西在提交里** → 点「让窗口读最近一次提交」；也可以在窗口里自己 `hunk show <ref>` / `hunk log`，tab 会跟着变。窗口若是在改动之前开的且一直没重载，也会显示旧内容（切一次目标即可） |
+| 页面显示「这台机器上没找到 hunk」 | 那不是错误而是安装引导：按里面给的命令装（`npm i -g hunkdiff` 需 Node 22+ / brew / install.sh / mise），装完**重启 `dsh web`**；hunk 不在宿主 PATH 上时用 `DSH_HUNK_BIN` 指绝对路径。不想手动就点「让 DSH 帮我装 hunk」，请求会发进当前会话 |
+| 点了「让 DSH 帮我装」聊天里没动静 | 页面会提示「没能把请求发进当前会话」= `ctx.sessions.binding(sessionId)` 拿不到会话面（对话视图没保留该会话）。改用「复制提示词」粘到对话框；控制台有 `[dsh-hunk] could not ask the agent…` 带原因 |
 | 自动开了窗口，但一直没出现会话 | 看一眼那个控制台窗口：它自己会报错（PATH 里没有 hunk、目录没有改动、daemon 起不来）。冷启动到注册本机实测 8–9 秒，tab 等 30 秒仍没有就换成「开了但没注册」的文案。窗口一闪而过通常是 `hunk` 不在宿主 PATH：设 `DSH_HUNK_BIN` |
 | 关掉自动开窗 | 宿主上设 `DSH_HUNK_AUTOSTART=0`（要重启 `dsh web`），tab 就只告诉你没会话 + 那条命令 |
 | 路由 404 / 返回 HTML | host 半没加载 → 重启 `dsh web` |

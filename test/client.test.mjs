@@ -50,10 +50,13 @@ function requireStub(specifier) {
 /** A locale service stub recording what the plugin registers. */
 function localeStub(active) {
   const registered = []
+  const dictionaries = {}
   return {
     registered,
+    dictionaries,
     register(ns, locale, dict) {
       registered.push({ ns, locale, keys: Object.keys(dict).length })
+      dictionaries[locale] = dict
       return () => {}
     },
     getSnapshot: () => ({ active, locales: [], revision: 0 }),
@@ -305,4 +308,94 @@ test('an unknown grammar yields no tokens, so the rows stay plain text', async (
   const first = plugin.highlightBlock('const x = 1', 'typescript')
   assert.ok(first.length > 0)
   assert.equal(plugin.highlightBlock('const x = 1', 'typescript'), first)
+})
+
+/*
+ * "hunk is not installed": the guide's data, and the one action that resolves it
+ * from inside the tab. The session channel is stubbed, so these run in node.
+ */
+
+test('the install routes are the ones Hunk documents, per platform', async () => {
+  const plugin = await loadPlugin()
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const routes = plugin.installRoutes(platform)
+    assert.ok(routes.length > 0, `${platform} offers no route`)
+    for (const route of routes) {
+      assert.ok(route.id !== '' && route.label !== '', 'a route needs an id and a label')
+      assert.ok(route.command.includes('hunk') || route.command.includes('hunkdiff'), route.command)
+      // No placeholder ever reaches a code block the reader may paste.
+      assert.ok(!route.command.includes('{') && !route.command.includes('<'))
+    }
+  }
+  const windows = plugin.installRoutes('win32').map(route => route.command)
+  assert.ok(windows.some(command => command.includes('npm i -g hunkdiff')))
+  const linux = plugin.installRoutes('linux').map(route => route.command)
+  assert.ok(linux.some(command => command.includes('hunk.dev/install.sh')))
+})
+
+test('asking the agent goes through the session channel, queued, with an echo', async () => {
+  const plugin = await loadPlugin()
+  const calls = []
+  const abandoned = []
+  const session = {
+    beginSubmission(input) {
+      calls.push({ kind: 'begin', input })
+      return { requestId: 'req-1', abandon: () => { abandoned.push('req-1') } }
+    },
+    async prompt(content, mode, signal, requestId) {
+      calls.push({ kind: 'prompt', content, mode, signal, requestId })
+      return { ok: true, value: { accepted: true } }
+    },
+  }
+  const ctx = { get: name => (name === 'sessions' ? { binding: id => (id === 's-1' ? { session } : undefined) } : undefined) }
+
+  const outcome = await plugin.askAgentToInstall(ctx, 's-1', 'please install hunk')
+  assert.deepEqual(outcome, { ok: true })
+  assert.equal(calls.length, 2)
+  assert.deepEqual(calls[0].input, { mode: 'queue', text: 'please install hunk', attachments: [] })
+  // Queue, never steer: asking for a favour must not interrupt a running turn.
+  assert.equal(calls[1].mode, 'queue')
+  assert.deepEqual(calls[1].content, [{ type: 'text', text: 'please install hunk' }])
+  // The echo identity is carried into the prompt, so the chat shows the message
+  // once instead of twice.
+  assert.equal(calls[1].requestId, 'req-1')
+  assert.deepEqual(abandoned, [])
+})
+
+test('a session that refuses the prompt retires the echo, and a missing channel is reported', async () => {
+  const plugin = await loadPlugin()
+  const abandoned = []
+  const refusing = {
+    beginSubmission: () => ({ requestId: 'req-9', abandon: () => { abandoned.push('req-9') } }),
+    async prompt() { return { ok: false, error: { message: 'queue is full' } } },
+  }
+  const bound = { get: () => ({ binding: () => ({ session: refusing }) }) }
+  const refused = await plugin.askAgentToInstall(bound, 's-1', 'text')
+  assert.equal(refused.ok, false)
+  assert.equal(refused.reason, 'rejected')
+  assert.equal(refused.message, 'queue is full')
+  assert.deepEqual(abandoned, ['req-9'])
+
+  // No service, and a session the conversation view has not retained: both are
+  // reported rather than silently doing nothing.
+  assert.equal((await plugin.askAgentToInstall({ get: () => undefined }, 's-1', 'text')).reason, 'no-sessions-service')
+  const unretained = { get: () => ({ binding: () => undefined }) }
+  assert.equal((await plugin.askAgentToInstall(unretained, 's-1', 'text')).reason, 'session-not-retained')
+})
+
+test('the install request is a dictionary entry with both placeholders filled', async () => {
+  const plugin = await loadPlugin()
+  const locale = localeStub('zh')
+  const { ctx } = fakeCtx(locale)
+  plugin.apply(ctx)
+  const dictionaries = Object.fromEntries(locale.registered.map(entry => [entry.locale, entry.keys]))
+  // Both shipped languages carry it (the Record<HunkKey, string> type enforces
+  // parity; this pins that the key actually exists and is the large one).
+  assert.equal(dictionaries.zh, dictionaries.en)
+  const zhAsk = locale.dictionaries.zh['install.ask']
+  assert.match(zhAsk, /\{cwd\}/)
+  assert.match(zhAsk, /\{detail\}/)
+  assert.match(zhAsk, /hunk --version/)
+  assert.match(zhAsk, /DSH_HUNK_BIN/)
+  assert.match(zhAsk, /dsh web/)
 })

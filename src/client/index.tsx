@@ -161,3 +161,5 @@ export {
   tokenizeSides,
 } from './highlight'
 export { languageForPath, TOKEN_FALLBACKS, LANGUAGE_EXTENSIONS } from '../shared/languages'
+export { askAgentToInstall, installRoutes, platformHint } from './install'
+export type { AskOutcome, InstallRoute } from './install'
