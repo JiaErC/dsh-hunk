@@ -75,6 +75,20 @@ export const zh = {
   'target.lastCommit': '让窗口读最近一次提交',
   'target.switching': '切换中…',
   'target.noSession': '没有可切换的 live 窗口（先让它自动开一个，或自己开）。',
+  'install.title': '这台机器上没找到 hunk',
+  'install.lead': '「Hunk 评审」这个页面本身是好的，缺的是它要读的 Hunk——一个终端里的 diff 评审工具（就是你在终端跑 `hunk diff --watch` 的那个）。',
+  'install.why': '装上它以后，本页就能读到你仓库里的 live 评审会话：文件、hunk、注释，以及 AI 写下的每一条评审。',
+  'install.stepInstall': '① 装 hunk（任选一种）',
+  'install.stepPath': '② 让宿主找得到它',
+  'install.pathHint': '装完先在新终端里执行 `hunk --version` 确认能跑。如果 hunk 不在宿主进程的 PATH 上（比如只装在某个目录里），给它一个绝对路径：在启动 dsh web 的环境里设 DSH_HUNK_BIN，例如：',
+  'install.stepVerify': '③ 验证',
+  'install.restart': '装完/改完环境变量后**重启 dsh web**（宿主只在启动时读一次 PATH 与 DSH_HUNK_BIN），再回到本页点「刷新」。',
+  'install.askAction': '让 DSH 帮我装 hunk',
+  'install.copyAction': '复制提示词',
+  'install.asking': '正在把请求发进当前会话…',
+  'install.sent': '已经把安装请求发进当前会话（排队执行）；回到对话框看它怎么做，装完重启 dsh web 再点「刷新」。',
+  'install.askFailed': '没能把请求发进当前会话（这个页面拿不到会话通道）。请按上面的步骤手动安装，或直接在对话框里让 DSH 帮你装。',
+  'install.ask': '请帮我在本机安装 Hunk（终端 diff 评审工具），并让 dsh-hunk 插件能用上它。背景：我在 DSH 的「Hunk 评审」页面里收到了「没找到 hunk」，宿主侧报的是：{detail}；当前会话目录：{cwd}。请你：1) 先确认 hunk 是否已装（hunk --version）；2) 没装就按系统选一种方式装（npm i -g hunkdiff 需要 Node 22+；Windows 也可以用 mise；macOS/Linux 还有 brew 与官方 install.sh）；3) 确认宿主进程能解析到它（必要时在启动 dsh web 的环境里设 DSH_HUNK_BIN 指向可执行文件）；4) 告诉我需要重启 dsh web 才能生效，并在装完后回到「Hunk 评审」页面确认。',
 } as const
 
 /** 本插件的文案键。 */
@@ -144,6 +158,20 @@ export const en: Record<HunkKey, string> = {
   'target.lastCommit': 'Read the last commit',
   'target.switching': 'Switching…',
   'target.noSession': 'There is no live window to switch (let one be opened, or open one yourself).',
+  'install.title': 'hunk was not found on this machine',
+  'install.lead': 'This page is fine — what it is missing is Hunk, the terminal diff reviewer it reads (the thing you run as `hunk diff --watch`).',
+  'install.why': 'With it installed, this page shows the live review session of your repository: files, hunks, notes, and every review note an agent wrote.',
+  'install.stepInstall': '1. Install hunk (any one of these)',
+  'install.stepPath': '2. Make sure the host can find it',
+  'install.pathHint': 'Run `hunk --version` in a new terminal to confirm it works. If hunk is not on the host process PATH (a copy in some directory, say), give it an absolute path: set DSH_HUNK_BIN in the environment that starts dsh web, e.g.:',
+  'install.stepVerify': '3. Verify',
+  'install.restart': 'After installing or changing the environment, RESTART dsh web (the host reads PATH and DSH_HUNK_BIN once, at startup), then come back and press Refresh.',
+  'install.askAction': 'Ask DSH to install hunk',
+  'install.copyAction': 'Copy the request',
+  'install.asking': 'Sending the request into this session…',
+  'install.sent': 'The install request is in this session now (queued). Watch the chat for what it does; restart dsh web when it is done, then press Refresh here.',
+  'install.askFailed': 'Could not send the request into this session (this page has no session channel here). Follow the steps above, or just ask DSH in the chat.',
+  'install.ask': 'Please install Hunk (the terminal diff reviewer) on this machine and make the dsh-hunk plugin able to use it. Context: the DSH "Hunk review" page reports that hunk was not found; the host said: {detail}; the current session directory is {cwd}. Please: 1) check whether hunk is already installed (hunk --version); 2) if not, install it the way that fits this system (npm i -g hunkdiff needs Node 22+; on Windows mise also works; macOS/Linux have brew and the official install.sh); 3) make sure the host process can resolve it (set DSH_HUNK_BIN to the executable in the environment that starts dsh web when needed); 4) tell me that dsh web must be restarted for it to take effect, then come back to the "Hunk review" page to confirm.',
 }
 
 /**

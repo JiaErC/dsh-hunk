@@ -7,8 +7,9 @@
  * `hunk` CLI itself, which the live case needs and skips without.
  */
 import assert from 'node:assert/strict'
+import { tmpdir } from 'node:os'
 import { test } from 'node:test'
-import { HUNK_ERROR, HUNK_STATE_PATH, HUNK_WATCH_PATH, apply } from '../lib/index.js'
+import { HUNK_ERROR, HUNK_RELOAD_PATH, HUNK_STATE_PATH, HUNK_WATCH_PATH, apply } from '../lib/index.js'
 
 /** A response object shaped like the parts of ServerResponse the handler uses. */
 function mockResponse() {
@@ -108,12 +109,15 @@ function routeFor(routes, path) {
 
 test('apply mounts one exact-path route per endpoint', () => {
   const routes = mount()
-  assert.equal(routes.length, 2)
+  assert.equal(routes.length, 3)
   for (const route of routes) {
     assert.equal(route.kind, 'exact')
     assert.equal(typeof route.handler, 'function')
   }
-  assert.deepEqual(routes.map(route => route.path).sort(), [HUNK_STATE_PATH, HUNK_WATCH_PATH])
+  assert.deepEqual(
+    routes.map(route => route.path).sort(),
+    [HUNK_RELOAD_PATH, HUNK_STATE_PATH, HUNK_WATCH_PATH],
+  )
 })
 
 test('the route fences non-local Host headers, methods and missing cwd', async () => {
@@ -218,6 +222,51 @@ test('the watch route is POST-only, fenced, and validates its body', async () =>
   })
   assert.equal(badCwd.status, 400)
   assert.equal(badCwd.json.error.code, HUNK_ERROR.badCwd)
+})
+
+test('the reload route is POST-only, fenced, and refuses a target it does not know', async () => {
+  const route = routeFor(mount(), HUNK_RELOAD_PATH)
+  const cwd = process.cwd()
+
+  // A GET must not steer anyone's window.
+  const asGet = await request(route, { method: 'GET' })
+  assert.equal(asGet.status, 405)
+  assert.equal(asGet.json.error.code, HUNK_ERROR.methodNotAllowed)
+
+  const forbidden = await request(route, {
+    method: 'POST',
+    headers: { host: 'evil.example.com' },
+    body: JSON.stringify({ cwd, target: 'working-tree' }),
+  })
+  assert.equal(forbidden.status, 403)
+  assert.equal(forbidden.json.error.code, HUNK_ERROR.forbidden)
+
+  // The target becomes argv, so anything unknown is refused here rather than
+  // forwarded: a revision string from the caller would be an injection surface.
+  for (const target of [undefined, 'HEAD~3', 'show HEAD', 42, { ref: 'HEAD' }]) {
+    const bad = await request(route, { method: 'POST', body: JSON.stringify({ cwd, target }) })
+    assert.equal(bad.status, 400, `target ${JSON.stringify(target)} should be refused`)
+    assert.equal(bad.json.error.code, HUNK_ERROR.badCwd)
+  }
+})
+
+test('the reload route answers with an action, not an error, when there is no window', async () => {
+  const route = routeFor(mount(), HUNK_RELOAD_PATH)
+  // A directory with no live window for it: the caller is told, and nothing is
+  // steered. (An absolute path that exists but is not this repo.)
+  const response = await request(route, {
+    method: 'POST',
+    body: JSON.stringify({ cwd: tmpdir(), target: 'last-commit' }),
+  })
+  if (response.status === 503) {
+    assert.equal(response.json.error.code, HUNK_ERROR.cliMissing)
+    return
+  }
+  assert.equal(response.status, 200)
+  assert.equal(response.json.ok, true)
+  assert.equal(response.json.action, 'no-live-session')
+  assert.equal(response.json.target, 'last-commit')
+  assert.match(response.json.command, /hunk session reload --repo \. -- show HEAD/)
 })
 
 test('the watch route answers with an action instead of spawning when disabled', async () => {

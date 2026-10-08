@@ -403,4 +403,16 @@ export const styles = {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
+  /** The install guide: a calm box, because nothing here is broken. */
+  install: {
+    padding: '10px 11px',
+    border: `1px solid ${token.border}`,
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  installTitle: { fontWeight: 600, marginBottom: 5 },
+  installLine: { color: token.textSecondary, marginBottom: 5, lineHeight: 1.5 },
+  installStep: { fontWeight: 600, marginTop: 9, marginBottom: 4 },
+  installRoute: { marginBottom: 4 },
+  installRouteLabel: { color: token.textTertiary, fontSize: 11 },
 } satisfies Record<string, CSSProperties>

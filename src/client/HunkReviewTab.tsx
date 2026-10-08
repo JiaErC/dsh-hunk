@@ -33,15 +33,8 @@ import {
   type SplitCell,
   type SplitRow,
 } from '../shared/patch'
-import {
-  HunkClientError,
-  fetchHunkPatches,
-  fetchHunkState,
-  isAbort,
-  messageOf,
-  requestHunkReload,
-  requestHunkWatch,
-} from './api'
+import { HunkClientError, fetchHunkPatches, fetchHunkState, isAbort, messageOf, requestHunkReload, requestHunkWatch } from './api'
+import { askAgentToInstall, installRoutes, platformHint } from './install'
 import { useSessionCwd } from './session-cwd'
 import { useTranslate, type Translate } from './i18n'
 import { styles, token } from './styles'
@@ -691,6 +684,75 @@ function FailureBlock(props: {
   )
 }
 
+/**
+ * What to show when Hunk itself is missing.
+ *
+ * Not a failure block: nothing is broken, the plugin simply has no Hunk to talk
+ * to. So it explains what Hunk is, lists the install routes Hunk documents, says
+ * how to point the plugin at a non-PATH install, and offers the one action that
+ * actually resolves it here — asking the agent in this session to install it.
+ */
+function InstallGuide(props: {
+  t: Translate
+  /** The host's own diagnostic line, so the reader sees the real complaint. */
+  detail: string
+  /** The canned request, so it can also be copied when the channel is closed. */
+  askText: string
+  /** `null` until the button has been used. */
+  asked: 'sent' | 'failed' | null
+  asking: boolean
+  onAsk: () => void
+}): ReactNode {
+  const { t, detail, askText, asked, asking, onAsk } = props
+  const [copied, setCopied] = useState(false)
+  const routes = installRoutes(platformHint())
+  const copyPrompt = (): void => {
+    void (async () => {
+      try {
+        await navigator.clipboard.writeText(askText)
+        setCopied(true)
+      } catch (error) {
+        console.error('[dsh-hunk] clipboard write failed:', error)
+      }
+    })()
+  }
+  return (
+    <div style={styles.install as CSSProperties}>
+      <div style={styles.installTitle as CSSProperties}>{t('install.title')}</div>
+      <div style={styles.installLine as CSSProperties}>{t('install.lead')}</div>
+      <div style={styles.installLine as CSSProperties}>{t('install.why')}</div>
+      {detail !== '' && <div style={styles.failureMessage as CSSProperties}>{detail}</div>}
+
+      <div style={styles.installStep as CSSProperties}>{t('install.stepInstall')}</div>
+      {routes.map(route => (
+        <div key={route.id} style={styles.installRoute as CSSProperties}>
+          <span style={styles.installRouteLabel as CSSProperties}>{route.label}</span>
+          <CommandLine t={t} text={route.command} />
+        </div>
+      ))}
+
+      <div style={styles.installStep as CSSProperties}>{t('install.stepPath')}</div>
+      <div style={styles.installLine as CSSProperties}>{t('install.pathHint')}</div>
+      <CommandLine t={t} text="DSH_HUNK_BIN=C:\\path\\to\\hunk.exe" />
+
+      <div style={styles.installStep as CSSProperties}>{t('install.stepVerify')}</div>
+      <CommandLine t={t} text="hunk --version" />
+      <div style={styles.installLine as CSSProperties}>{t('install.restart')}</div>
+
+      <div style={{ marginTop: 10, display: 'flex', gap: 6, alignItems: 'center' }}>
+        <Button
+          label={asking ? t('install.asking') : t('install.askAction')}
+          disabled={asking}
+          onClick={onAsk}
+        />
+        <Button label={copied ? t('action.copied') : t('install.copyAction')} onClick={copyPrompt} />
+      </div>
+      {asked === 'sent' && <div style={styles.installLine as CSSProperties}>{t('install.sent')}</div>}
+      {asked === 'failed' && <div style={styles.failureMessage as CSSProperties}>{t('install.askFailed')}</div>}
+    </div>
+  )
+}
+
 /** How long a missing cwd is waited on before it is reported as a failure. */
 const CWD_GRACE_MS = 2000
 
@@ -762,6 +824,9 @@ export function HunkReviewTab({ ctx, sessionId, useTabInfo }: HunkTabProps): Rea
   const watchAttempted = useRef<string | null>(null)
   /** The input switch in flight, if any (a reload replaces what the window shows). */
   const [switching, setSwitching] = useState<HunkReloadTarget | null>(null)
+  /** Whether this tab has asked the agent to install Hunk, and how that went. */
+  const [installAsk, setInstallAsk] = useState<'sent' | 'failed' | null>(null)
+  const [installAsking, setInstallAsking] = useState(false)
   const requestRef = useRef<AbortController | null>(null)
   const runRef = useRef(0)
   /** The in-flight or settled patch read, tagged with the cwd it belongs to. */
@@ -950,6 +1015,47 @@ export function HunkReviewTab({ ctx, sessionId, useTabInfo }: HunkTabProps): Rea
     }
   }, [cwd, switching, refresh, t])
 
+  /**
+   * Ask the agent in THIS session to install Hunk.
+   *
+   * The prompt goes through the session API — the same channel the composer uses
+   * — queued, never steering, so a running turn is not interrupted. The text is
+   * canned (a dictionary entry) with the cwd and the host's diagnostic filled in.
+   */
+  /**
+   * The canned request, built once per render so the inject button and the
+   * clipboard button send exactly the same words.
+   */
+  const installRequest = useMemo(
+    () => t('install.ask', { cwd: cwd ?? '', detail: failure?.message ?? '' }),
+    [t, cwd, failure],
+  )
+
+  /**
+   * Ask the agent in THIS session to install Hunk.
+   *
+   * The prompt goes through the session API — the same channel the composer uses
+   * — queued, never steering, so a running turn is not interrupted. The text is
+   * canned (a dictionary entry) with the cwd and the host's diagnostic filled in.
+   */
+  const askForInstall = useCallback(() => {
+    if (installAsking) return
+    setInstallAsking(true)
+    setInstallAsk(null)
+    void (async () => {
+      try {
+        const outcome = await askAgentToInstall(ctx, sessionId, installRequest)
+        setInstallAsk(outcome.ok ? 'sent' : 'failed')
+        if (!outcome.ok) console.error('[dsh-hunk] could not ask the agent to install Hunk:', outcome.reason, outcome.message ?? '')
+      } catch (error) {
+        console.error('[dsh-hunk] asking the agent to install Hunk failed:', error)
+        setInstallAsk('failed')
+      } finally {
+        setInstallAsking(false)
+      }
+    })()
+  }, [installAsking, ctx, sessionId, installRequest])
+
   /** One retry action for both failure kinds: wait for cwd again, or re-read. */
   const retry = useCallback(() => {
     if (cwd === undefined) {
@@ -983,7 +1089,20 @@ export function HunkReviewTab({ ctx, sessionId, useTabInfo }: HunkTabProps): Rea
       <div style={styles.body as CSSProperties}>
         {cwdFailed && <FailureBlock t={t} failure={{ code: 'cwd', message: t('cwd.missing') }} onRetry={retry} />}
         {!cwdFailed && failure !== null && (
-          <FailureBlock t={t} failure={failure} onRetry={retry} />
+          failure.code === 'hunk-cli-missing'
+            // Nothing is broken: Hunk itself is absent, which is a thing to
+            // explain and to offer help with, not an error to retry.
+            ? (
+                <InstallGuide
+                  t={t}
+                  detail={failure.message}
+                  askText={installRequest}
+                  asked={installAsk}
+                  asking={installAsking}
+                  onAsk={askForInstall}
+                />
+              )
+            : <FailureBlock t={t} failure={failure} onRetry={retry} />
         )}
         {!cwdFailed && failure === null && data === null && (
           <p style={styles.muted as CSSProperties}>{t('loading')}</p>
