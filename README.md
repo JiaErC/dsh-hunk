@@ -41,7 +41,8 @@
 - **cwd 从客户端会话列表 live 读**（`src/client/session-cwd.ts`）：`sessions.list`
   快照的 `byId[sessionId].cwd`，用 `useSyncExternalStore` 订阅，所以会话刚加载完
   cwd 出现时页面会自己跟上，不需要重开或重试。
-- **两条路由**：`/dsh-hunk/state`（只读，GET）与 `/dsh-hunk/watch`（开窗，POST）。
+- **三条路由**：`/dsh-hunk/state`（只读，GET）、`/dsh-hunk/watch`（开窗，POST）、
+  `/dsh-hunk/reload`（切换窗口读什么，POST）。
   - 默认（结构读）：先 `hunk session list --json`，**只有匹配到本仓库的窗口时才**再跑
     `hunk session review --repo . --json --include-notes`。顺序是被一个真实截图纠正的：
     选择器匹配不到任何东西时，这条 review 命令会以
@@ -54,12 +55,55 @@
     主机侧 5 秒 TTL + 同键合并，避免每次刷新都重建整份 patch；没有 live 会话时
     先用廉价的 `session list` 判掉，不去跑那条昂贵的命令。
   - `POST /dsh-hunk/watch`（开窗，见下节）：`{ cwd }` 进去，`{ action, pid, command }`
-    出来。**只有它是 POST**——GET 会被预取和重试反复打到，一个会拉进程的 GET 是陷阱。
+    出来。**只有开窗与切换是 POST**——GET 会被预取和重试反复打到，一个会拉进程的 GET 是陷阱。
+  - `POST /dsh-hunk/reload`（切换读取目标，见下节）：`{ cwd, target }` 进去，`target` 只能是
+    `working-tree` 或 `last-commit` 两个**枚举值之一**（不接受调用方给的任意 revision——这个值
+    会进 argv）；换掉的是用户窗口正在看的内容，所以只有点了按钮才会发生。
 - **没有 live 会话时**：路由照样 200，`matched: null`，页面显示
   「先在终端运行 `cd <cwd> && hunk diff --watch`」并列出其它仓库的 live 窗口；
   Windows 上还会先自动开一个（下一节）。
 - **两个「半」互相不认识**：它们只共享 `src/shared/` 里的纯类型与纯函数，因此
   client bundle 不需要任何 DSH 包（react 来自宿主的 module table）。
+
+## 这个面板只能显示"你的窗口在读什么"
+
+tab 读的是 `hunk session review`，也就是**那个 live 窗口当前持有的那份 review**。所以
+「0 个文件」有两种完全不同的原因：工作区确实没有改动，或者窗口读的不是你想看的东西——
+而 AI 每轮结束都会提交，于是**每轮之后工作区都是干净的，想看的东西在提交里**。
+
+界面上的做法是把它说清楚，并给出两个按钮：
+
+```
+这个 Hunk 窗口正在读：[dsh-hunk working tree]      [让窗口读工作区] [让窗口读最近一次提交]
+```
+
+- 按钮走 `hunk session reload --repo . -- diff` / `-- show HEAD`（实测：切换后
+  `hunk session review` 立刻返回那次提交的文件），切完 tab 自己重读一次。
+- 这是本插件唯一会**改动用户窗口内容**的操作，所以绝不自动发生：只有你点按钮才会切。
+- 查看更早的历史仍然是窗口自己的事（在窗口里用 `hunk log` / `hunk show <ref>`），tab 会跟着变。
+
+## 没装 hunk 时
+
+这台机器上没有 hunk 的时候，页面**不是**一个报错框，而是一份安装引导
+（`src/client/install.ts` + `InstallGuide`）：装什么、怎么装（按系统给出 hunk 官方 README 里
+的那几条路线：`npm i -g hunkdiff` 需要 Node 22+、Windows 也可用 mise、macOS/Linux 还有 brew
+与 `curl -fsSL https://hunk.dev/install.sh | sh`）、怎么让宿主找得到它（`DSH_HUNK_BIN` 指向
+可执行文件的绝对路径）、怎么验证（`hunk --version`）、以及**装完必须重启 `dsh web`**
+（宿主只在启动时读一次 PATH 与 `DSH_HUNK_BIN`）。
+
+引导里有两个动作：
+
+- **让 DSH 帮我装 hunk**：把一段现成的请求**注入当前会话**，让本会话的 agent 去装。走的是
+  DSH 自己的会话通道——`ctx.sessions.binding(sessionId).session.prompt([{type:'text',…}],
+  'queue')`，也就是聊天输入框发消息用的那条路（先用 `beginSubmission` 登记本地回显，聊天里
+  立刻能看到这条消息；prompt 失败则 `abandon()` 收回回显）。**queue 而不是 steer**：这是
+  "请顺手做" 而不是 "打断你手上的活"。文本是词典里的一条固定文案（中文/英文各一份，跟随界面
+  语言），只有 cwd 与宿主的诊断行是变量——不接受任何自由输入。
+- **复制提示词**：万一会话通道在这个页面拿不到（`binding()` 返回空），把它复制到剪贴板，
+  你自己粘到对话框里发。
+
+宿主侧的识别是现成的：`hunk` 起不来（spawn 层失败，`ENOENT` 之类）时 `/dsh-hunk/state`
+返回 503 + `hunk-cli-missing`，tab 就把上面这份引导渲染出来，而不是通用错误框。
 
 ## 自动打开 Hunk 窗口
 

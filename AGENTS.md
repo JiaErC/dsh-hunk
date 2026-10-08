@@ -55,6 +55,15 @@
   `hunk: protocol-validation-failed` 失败（实测三种仓库一字不差：有提交的、没提交的、报障那个），
   那只是它表达「没有 live 会话」的措辞；`collectHunkState` 因此先跑 `session list`，匹配不到就
   直接返回 `review: null, reviewError: null`（由 tab 用自己的文案说明），匹配到了才跑第二条。
+- **不要碰用户窗口的读取目标，除非他点了按钮**：`hunk session reload` 会换掉用户正在看的
+  内容，所以只有 `POST /dsh-hunk/reload` 一条路由能做这件事，且 `target` 只能是
+  `working-tree` / `last-commit` 两个枚举值——**绝不允许调用方传 revision**（它进 argv）。
+  这是本插件唯一的"写"操作。
+- **给 agent 的请求走会话通道，不走 DOM**：没装 hunk 时引导里的「让 DSH 帮我装」用
+  `ctx.sessions.binding(sessionId).session.prompt([{type:'text',text}], 'queue')`（聊天输入框
+  同一条路），先 `beginSubmission` 登记回显、prompt 失败 `abandon()` 收回；**queue 而不是
+  steer**（不打断正在跑的回合）。文本是词典里的固定条目（zh/en 各一份），只有 cwd 与宿主诊断
+  行是变量；拿不到通道时降级成「复制提示词」按钮，绝不猜着发。
 - **生效路径要分清**：改 host 半（`src/index.ts` / `src/host/**`）→ 必须重启 `dsh web`；
   改 client 半（`src/client/**`）→ 浏览器硬刷新即可（不用重启宿主）。
 
