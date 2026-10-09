@@ -232,6 +232,7 @@ git describe --tags     # v0.3.0
 | `build.mjs` | esbuild：host 出 ESM，client 出 `__ModuleLoader__.load` 包装（body 原样插入，见下） |
 | `test/*.test.mjs` | 记录型 payload 单测 + 真实 CLI 活体测试 + 假 webserver 路由测试 + client bundle 测试 |
 | `scripts/preview.mjs` | 不开浏览器，直接打印 tab 会渲染的那份 JSON |
+| `LICENSE` | MIT 许可证全文（版权行 `Copyright (c) 2026 JiaErC`） |
 
 ## 构建
 
@@ -324,3 +325,12 @@ npm run preview       # 打印当前目录的 payload；npm run preview -- --jso
   浏览器里的观感需要人工确认（本仓库的自动化测试跑不出真实渲染）。
 - `lib/` 是构建产物（已 gitignore），挂载前需要 `npm run build`；改动 host 半后
   `dsh web` 必须重启才会加载新的 `lib/index.js`。
+
+## 许可证
+
+**MIT**，全文见 [LICENSE](LICENSE)，版权行 `Copyright (c) 2026 JiaErC`；
+`package.json#license` 声明的是同一个 SPDX 标识符（`MIT`）——两处必须一致。
+
+> 本项目**不发布到 npm**（`private: true`，靠 `link:` 挂载到 profile），所以
+> `package.json#files` 里没列 `LICENSE` 也不影响分发：npm 打包时始终会自动带上
+> 许可证文件。以 fork / 复制方式再分发时，请按 MIT 要求保留版权声明与许可全文。
